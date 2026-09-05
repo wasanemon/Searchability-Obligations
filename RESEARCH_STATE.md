@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-06 04:50 (Asia/Tokyo)
+Last updated: 2026-09-06 05:10 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -904,6 +904,115 @@ complete. The next resumable phase is to commit these immutable small evidence
 files and report, then reproduce setup, native correctness, offline smoke, and
 report generation from a clean/new environment without overwriting the formal
 correctness or validation evidence.
+
+## Issue #3 clean/new-environment acceptance
+
+- The formal publication artifacts were committed as `eaed074` with message
+  `research: record final native validation NO-GO (refs #1, #3)`. The tree was
+  clean at full commit `eaed0740db9ef18e9ab61aa094fc1b206a002440`.
+  Existing `.venv`, `build`, native shared object, pytest/Hypothesis caches,
+  and Python bytecode caches were moved intact to ignored
+  `.cache/issue3-clean-acceptance-eaed074/preexisting/`; none was deleted.
+  `PYTHONPYCACHEPREFIX` pointed at a fresh ignored cache during acceptance.
+- The first sandboxed fresh `make setup` created the new `.venv` but failed
+  while resolving pinned `pip==26.2.1`: five DNS retries ended with no matching
+  distribution visible and Make exited nonzero. This is retained as an
+  external-network failure, not called a passed setup. The identical command
+  was rerun with network approval and succeeded: all pinned dependencies were
+  installed, the editable C++ extension was rebuilt, and the environment check
+  recorded clean commit `eaed074`, CPython 3.10.12, NumPy 2.2.6, Faiss 1.15.0,
+  Faiss squared-L2 HNSW smoke success, and all five thread variables plus Faiss
+  threads equal to 1.
+- The fresh native shared object reproduced SHA-256
+  `eef245f3d812b3e90466ceee8ea0107ee72de72ed81fd706304e390042cd100a`
+  exactly. `native_build_info()` also reproduced source/compiled-source hash
+  `bf32578fc0e025531c2ab961aa164bd62c7859b93b96a26328176089f8fa6215`,
+  the four required compile flags, and enforced rounding mode. An initial
+  diagnostic imported nonexistent `searchability.native_kernel` and raised
+  `ModuleNotFoundError`; the correct module is `searchability.native`, which
+  produced the values above. No test or experiment was affected.
+- Fresh `make native-test` wrote to alternate ignored paths, leaving the formal
+  correctness prerequisite unchanged. It collected 256 tests, selected 255,
+  and reported `255 passed, 1 deselected, 20 warnings in 69.50s`, including
+  exactly 10,000 fixed-seed native cases, with failures/errors/skips all zero.
+  It bound commit `eaed074`, the formal implementation/test hashes
+  `bb9c65d7060ed8d8dfca3ff157b32aa318181f0a0b793eb816d12987fdd82c4f` /
+  `9e67be783618aa1ee1d9a53fcb93d2c0fda727fc29f85fc748cc98d27efbb325`,
+  and the identical native shared object. The
+  acceptance correctness/JUnit SHA-256 values are
+  `a278f049bbe8a5ad110facd08bf82ad3eef1427fee22a01c6be3c126e2411193` /
+  `5b0ca917f4fc3f1782ee3a170c41865cc9f78cdf3ee3682c4aab086777eb9613`.
+- The preexisting smoke directory was moved intact to ignored
+  `results/native_recheck_runs/superseded/smoke-pre-final-clean-eaed074/`.
+  Fresh `make native-smoke` then completed run
+  `native-recheck-offline-smoke-20260905T200116715380Z-f4ee103dc9`: 8/8
+  blocks, 8 raw shards, 224 rows, 1,209,598 bytes, 32 unique queries, 320
+  native calls, and no run failure. Row-level correctness/native-backend checks
+  passed 128/128 rows. Its expected calibration gate was `NOT_PASSED` and
+  created no lock. Completion/manifest/summary/gate SHA-256 values are
+  `46760f1ce842a4b9e7c3f825ba7d6a9547ef98e5e8876ddf3e226c8f325c00cf`,
+  `541f1b8553a1630d0eff0abe7c76cff3e0313d210817b938252f4e8bf8956f78`,
+  `27399a10fc811cd287601f95be81bf4b9ff8edf20c55474df77c78e3973e88c3`,
+  and `2f7cfe7b86d6cbed3d26361f83d430755985557db9c2b43cbdf678e13ac81698`,
+  respectively; the full files remain in the ignored smoke directory.
+- From the new environment, `make native-report` revalidated the formal saved
+  raw/ancillary receipts and reproduced the committed Japanese report exactly
+  at SHA-256
+  `9807d1da5629855edb772db33f24d8785434225b1ca8ab38ca7729072827b235`.
+  `git diff --exit-code` confirmed no change to the report, correctness,
+  summary, gate, representative sample, or terminal decision; their seven
+  hashes all remained identical to the formal publication set.
+- A direct post-acceptance environment capture was first invoked without the
+  Makefile's exported thread variables; it truthfully recorded five null
+  values and was retained as
+  `.cache/issue3-clean-acceptance-eaed074/environment-without-make-env.json`
+  (SHA-256
+  `5e88796f2c41effe79fe8f091751d838b08d90bd525f4522d1ea0c535b6b0f96`).
+  Repeating it with the five explicit one-thread variables produced
+  `environment.json` (SHA-256
+  `be69ee4abec32c989bffa782856737c101d07b274a937b9d8b4571b182aa3484`)
+  with a clean tree and all controls equal to 1. This diagnostic distinction
+  does not alter the already captured one-thread setup, test, smoke, or formal
+  run.
+- A final independent read-only acceptance audit reported no P0/P1 findings.
+  It confirmed that old and fresh environments/shared objects use distinct
+  inodes while the fresh binary bytes match formal evidence; independently
+  parsed the 255-test/10,000-case alternate receipts; and reconciled fresh
+  smoke calls as 256 timed + 16 calibration + 32 warmup + 16 LB = 320. Its
+  smoke LB audit found 48 decisions (32 scans, 16 strict skips), no violation,
+  exactly one completed smoke-role run, and no formal-validation mixing. It
+  also compared each of the seven formal publication files individually to
+  commit `eaed074` and found byte-for-byte identity.
+
+Exact acceptance commands:
+
+```bash
+# After moving the preexisting environment/build/cache files intact:
+PYTHONPYCACHEPREFIX="$PWD/.cache/issue3-clean-acceptance-eaed074/fresh-pycache" \
+  make setup
+# The first sandboxed invocation failed DNS; the identical approved invocation passed.
+.venv/bin/python -c \
+  'from searchability.native import native_build_info; print(native_build_info())'
+PYTHONPYCACHEPREFIX="$PWD/.cache/issue3-clean-acceptance-eaed074/fresh-pycache" \
+  make \
+    NATIVE_CORRECTNESS=.cache/issue3-clean-acceptance-eaed074/native-test/native_correctness.json \
+    NATIVE_JUNIT=.cache/issue3-clean-acceptance-eaed074/native-test/native_correctness_junit.xml \
+    native-test
+mv results/native_recheck_runs/smoke-v3 \
+  results/native_recheck_runs/superseded/smoke-pre-final-clean-eaed074
+PYTHONPYCACHEPREFIX="$PWD/.cache/issue3-clean-acceptance-eaed074/fresh-pycache" \
+  make native-smoke
+PYTHONPYCACHEPREFIX="$PWD/.cache/issue3-clean-acceptance-eaed074/fresh-pycache" \
+  make native-report
+git diff --exit-code -- reports/NATIVE_KERNEL_RECHECK_ja.md \
+  results/native_recheck_evidence
+```
+
+Outcome: the clean/new-environment acceptance chain passed while keeping both
+the formal correctness/validation evidence and every earlier run separate and
+recoverable. The next resumable phase is to commit this state-only record,
+verify a clean branch, publish `codex/issue-3-native`, open the stacked PR onto
+`codex/issue-1`, and wait for CI without merging.
 
 ## Scope and source status
 
