@@ -1,0 +1,458 @@
+{
+  "schema_version": 2,
+  "study_id": "issue-3-native-recheck",
+  "run_name": "native-recheck-validation",
+  "phase": "validation",
+  "evidence_role": "validation",
+  "output_root": "results/native_recheck_runs/validation",
+  "threads": 1,
+  "process_sessions": 1,
+  "warmup_queries": 10,
+  "repetitions": 3,
+  "query_block_size": 25,
+  "method_order_seed": 6202051,
+  "bootstrap_resamples": 5000,
+  "bootstrap_seed": 6202052,
+  "independent_oracle_queries": 1,
+  "independent_oracle_max_population": 120000,
+  "lb_audit_queries": 25,
+  "base_cache_ablation_queries": 25,
+  "required_correctness_evidence": "results/native_recheck_evidence/native_correctness.json",
+  "holdout_policy": {
+    "manifest": "results/native_recheck_evidence/holdout_manifest.json",
+    "pre_registered_final_policy": {
+      "path": "configs/native_recheck_final_policy.json",
+      "file_sha256": "2cc4c63556707cdd0bfd9ec459c1202d430b3f9d87da78f48dd1dee918bfd811",
+      "object_sha256": "44604d74f5e3feec590e5db41c216a223fc745015dfa2cdc5ff74de362509f6a"
+    },
+    "validation_must_not_load_sift_query_ids_at_or_above": 1200,
+    "validation_query_role": "beta_calibration_only",
+    "test_query_role": "validation_measurement",
+    "sift_final_holdout_is_pre_registered_but_not_loaded": [1200, 2200],
+    "gist_measurement_is_reused_non_independent": true
+  },
+  "timing_scopes": [
+    "micro",
+    "composed_e2e",
+    "api_wall"
+  ],
+  "methods": [
+    {
+      "symbol": "O",
+      "method": "old_same_c_reference",
+      "purpose": "correctness_only",
+      "timed_primary": false
+    },
+    {
+      "symbol": "F",
+      "method": "native_full_delta_scan",
+      "purpose": "same_guarantee_baseline"
+    },
+    {
+      "symbol": "A",
+      "method": "optimized_faiss_delta_flat",
+      "purpose": "practical_baseline",
+      "retain_timing_when_quality_mismatch": true
+    },
+    {
+      "symbol": "A-reference",
+      "method": "faiss_order_lightweight_merge",
+      "purpose": "noncertified_faiss_order_reference",
+      "eligible_for_gate": false,
+      "retain_timing_when_quality_mismatch": true
+    },
+    {
+      "symbol": "N",
+      "method": "native_group_no_pruning",
+      "purpose": "skip_disabled_ablation"
+    },
+    {
+      "symbol": "P",
+      "method": "native_group_pruning",
+      "purpose": "proposed"
+    },
+    {
+      "symbol": "P-old",
+      "method": "python_group_pruning",
+      "purpose": "development_profile_only",
+      "enabled_in_validation": false
+    }
+  ],
+  "phases": [
+    {
+      "id": "native-correctness-gate",
+      "before_timing": true,
+      "methods": ["O", "F", "N", "P"],
+      "reuse_one_frozen_candidate_set": true,
+      "beta_zero_requires_ordered_id_version_match": true,
+      "positive_beta_requires_observed_le_certified_le_requested": true,
+      "native_backend_and_positive_call_count_required": true,
+      "on_failure": "preserve_counterexample_and_stop_performance_decision"
+    },
+    {
+      "id": "beta-calibration",
+      "query_partition": "validation_queries",
+      "rule": "absolute beta is factor times the validation reference kth-distance median",
+      "may_select_on_measurement_partition": false
+    },
+    {
+      "id": "validation-timing",
+      "query_partition": "test_queries",
+      "methods": ["F", "A", "N", "P"],
+      "one_frozen_candidate_set_per_query": true,
+      "shuffle_methods_per_query_block": true,
+      "profile_or_oracle_inside_timing": false
+    },
+    {
+      "id": "geometry-audit",
+      "query_partition": "validation_queries",
+      "timed": false,
+      "fields": [
+        "true_group_min_distance",
+        "lower_bound",
+        "radius",
+        "decision_tau",
+        "skip_or_scan"
+      ]
+    },
+    {
+      "id": "formal-validation-gate",
+      "input": "completed validation manifests only",
+      "on_not_passed": "write durable NOT_PASSED and do not create final lock"
+    }
+  ],
+  "ablation_stages": [
+    {
+      "id": "packed-layout",
+      "axis": "packed_vs_old_python_layout",
+      "comparison": ["P-old", "P"]
+    },
+    {
+      "id": "incremental-top-k",
+      "axis": "incremental_topk",
+      "toggle_values": [false, true]
+    },
+    {
+      "id": "adaptive-exact",
+      "axis": "adaptive_exact",
+      "toggle_values": [false, true]
+    },
+    {
+      "id": "pruning",
+      "axis": "pruning_enabled",
+      "comparison": ["N", "P"]
+    },
+    {
+      "id": "shared-base-preparation",
+      "axis": "immutable_base_view_cache",
+      "toggle_values": [false, true],
+      "cache_binding_fields": ["snapshot_id", "generation_id", "delta_revision"]
+    }
+  ],
+  "raw_row_required_fields": [
+    "run_id",
+    "config_hash",
+    "implementation_tree_sha256",
+    "experiment_id",
+    "method",
+    "method_role",
+    "session_id",
+    "query_id",
+    "query_position",
+    "repetition",
+    "micro_latency_ns",
+    "composed_e2e_latency_ns",
+    "api_wall_latency_ns",
+    "delta_influence",
+    "requested_beta_l2"
+  ],
+  "native_row_required_fields": [
+    "execution_backend",
+    "native_binary_sha256",
+    "native_call_count",
+    "native_call_index",
+    "python_fallback_used",
+    "contract_violation"
+  ],
+  "analysis_policy": {
+    "repetitions": "median_within_session_and_query",
+    "sessions": "geometric_mean_of_paired_baseline_over_P_ratios_within_query",
+    "queries": "geometric_mean_of_query_ratios",
+    "bootstrap_unit": "query",
+    "paired_bootstrap_minimum_resamples": 2000,
+    "retain_A_quality_mismatch_timing_rows": true,
+    "comparisons": [
+      "F_over_P",
+      "A_over_P"
+    ],
+    "report_delta_influence_subset": true
+  },
+  "validation_gate": {
+    "primary_metric": "api_wall",
+    "requires_completed_validation_manifests_only": true,
+    "requires_native_backend_and_calls": true,
+    "requires_correctness": true,
+    "requires_dataset_type": "texmex",
+    "fresh_holdout_primary_dataset": "sift",
+    "minimum_delta_count": 1000,
+    "minimum_delta_influence_queries": 1,
+    "paired_ci_lower_strictly_above": 1.0,
+    "required_baselines": ["F", "A"],
+    "prefer_beta_zero": true,
+    "not_passed_creates_final_lock": false
+  },
+  "defaults": {
+    "k": 10,
+    "candidate_count": 64,
+    "n_groups": 128,
+    "center_training_size": 100000,
+    "group_seed": 0,
+    "kmeans_iterations": 20,
+    "positive_beta_factors": [0.05],
+    "positive_beta_min": 1e-12,
+    "base_hnsw_ef_search": 128,
+    "hnsw_m": 32,
+    "hnsw_ef_construction": 200
+  },
+  "experiments": [
+    {
+      "id": "sift-initial",
+      "axis": "initial_and_beta_factor",
+      "dataset": {
+        "type": "texmex",
+        "name": "sift",
+        "root": "data/raw",
+        "n_base": 100000,
+        "n_delta": 10000,
+        "n_validation": 200,
+        "n_test": 200,
+        "validation_query_offset": 0,
+        "test_query_offset": 200
+      },
+      "raw_pending_count": 100,
+      "positive_beta_factors": [0.01, 0.05, 0.10],
+      "kernel_ablations": true
+    },
+    {
+      "id": "gist-initial",
+      "axis": "dataset_anchor",
+      "dataset": {
+        "type": "texmex",
+        "name": "gist",
+        "root": "data/raw",
+        "n_base": 50000,
+        "n_delta": 5000,
+        "n_validation": 200,
+        "n_test": 200,
+        "validation_query_offset": 0,
+        "test_query_offset": 200
+      },
+      "center_training_size": 50000,
+      "raw_pending_count": 50
+    },
+    {
+      "id": "sift-delta-0",
+      "axis": "delta_size",
+      "dataset": {
+        "type": "texmex",
+        "name": "sift",
+        "root": "data/raw",
+        "n_base": 100000,
+        "n_delta": 0,
+        "n_validation": 200,
+        "n_test": 200,
+        "validation_query_offset": 0,
+        "test_query_offset": 200
+      },
+      "raw_pending_count": 0
+    },
+    {
+      "id": "sift-delta-1000",
+      "axis": "delta_size",
+      "dataset": {
+        "type": "texmex",
+        "name": "sift",
+        "root": "data/raw",
+        "n_base": 100000,
+        "n_delta": 1000,
+        "n_validation": 200,
+        "n_test": 200,
+        "validation_query_offset": 0,
+        "test_query_offset": 200
+      },
+      "raw_pending_count": 10
+    },
+    {
+      "id": "sift-delta-100000",
+      "axis": "delta_size",
+      "dataset": {
+        "type": "texmex",
+        "name": "sift",
+        "root": "data/raw",
+        "n_base": 100000,
+        "n_delta": 100000,
+        "n_validation": 200,
+        "n_test": 200,
+        "validation_query_offset": 0,
+        "test_query_offset": 200
+      },
+      "raw_pending_count": 1000
+    },
+    {
+      "id": "sift-groups-64",
+      "axis": "group_count",
+      "dataset": {
+        "type": "texmex",
+        "name": "sift",
+        "root": "data/raw",
+        "n_base": 100000,
+        "n_delta": 10000,
+        "n_validation": 200,
+        "n_test": 200,
+        "validation_query_offset": 0,
+        "test_query_offset": 200
+      },
+      "n_groups": 64,
+      "raw_pending_count": 100
+    },
+    {
+      "id": "sift-groups-512",
+      "axis": "group_count",
+      "dataset": {
+        "type": "texmex",
+        "name": "sift",
+        "root": "data/raw",
+        "n_base": 100000,
+        "n_delta": 10000,
+        "n_validation": 200,
+        "n_test": 200,
+        "validation_query_offset": 0,
+        "test_query_offset": 200
+      },
+      "n_groups": 512,
+      "raw_pending_count": 100
+    },
+    {
+      "id": "sift-k-1",
+      "axis": "k",
+      "dataset": {
+        "type": "texmex",
+        "name": "sift",
+        "root": "data/raw",
+        "n_base": 100000,
+        "n_delta": 10000,
+        "n_validation": 200,
+        "n_test": 200,
+        "validation_query_offset": 0,
+        "test_query_offset": 200
+      },
+      "k": 1,
+      "candidate_count": 64,
+      "raw_pending_count": 100
+    },
+    {
+      "id": "sift-k-100",
+      "axis": "k",
+      "dataset": {
+        "type": "texmex",
+        "name": "sift",
+        "root": "data/raw",
+        "n_base": 100000,
+        "n_delta": 10000,
+        "n_validation": 200,
+        "n_test": 200,
+        "validation_query_offset": 0,
+        "test_query_offset": 200
+      },
+      "k": 100,
+      "candidate_count": 100,
+      "raw_pending_count": 100
+    },
+    {
+      "id": "synthetic-clustered",
+      "axis": "synthetic_family",
+      "dataset": {
+        "type": "synthetic",
+        "kind": "clustered",
+        "n_base": 512,
+        "n_delta": 128,
+        "n_validation": 32,
+        "n_test": 64,
+        "dimension": 16,
+        "clusters": 8,
+        "seed": 301
+      },
+      "k": 10,
+      "candidate_count": 64,
+      "n_groups": 16,
+      "center_training_size": 512,
+      "raw_pending_count": 2,
+      "group_seed": 1301,
+      "kmeans_iterations": 8
+    },
+    {
+      "id": "synthetic-high-dimensional-isotropic",
+      "axis": "synthetic_family",
+      "dataset": {
+        "type": "synthetic",
+        "kind": "isotropic",
+        "n_base": 512,
+        "n_delta": 128,
+        "n_validation": 32,
+        "n_test": 64,
+        "dimension": 128,
+        "seed": 302
+      },
+      "k": 10,
+      "candidate_count": 64,
+      "n_groups": 16,
+      "center_training_size": 512,
+      "raw_pending_count": 2,
+      "group_seed": 1302,
+      "kmeans_iterations": 8
+    },
+    {
+      "id": "synthetic-delta-near-queries",
+      "axis": "synthetic_family_intentional_query_correlation",
+      "dataset": {
+        "type": "synthetic",
+        "kind": "delta_near_queries",
+        "n_base": 512,
+        "n_delta": 128,
+        "n_validation": 32,
+        "n_test": 64,
+        "dimension": 16,
+        "seed": 303
+      },
+      "k": 10,
+      "candidate_count": 64,
+      "n_groups": 16,
+      "center_training_size": 512,
+      "raw_pending_count": 2,
+      "group_seed": 1303,
+      "kmeans_iterations": 8
+    },
+    {
+      "id": "synthetic-outlier-radius",
+      "axis": "synthetic_family",
+      "dataset": {
+        "type": "synthetic",
+        "kind": "outlier_radius",
+        "n_base": 512,
+        "n_delta": 128,
+        "n_validation": 32,
+        "n_test": 64,
+        "dimension": 16,
+        "clusters": 8,
+        "seed": 304
+      },
+      "k": 10,
+      "candidate_count": 64,
+      "n_groups": 16,
+      "center_training_size": 512,
+      "raw_pending_count": 2,
+      "group_seed": 1304,
+      "kmeans_iterations": 8
+    }
+  ]
+}

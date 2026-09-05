@@ -16,7 +16,7 @@ import faiss
 import numpy as np
 
 from .models import CandidateSet, SearchHit, VectorRecord, as_float32_vector
-from .numerics import distance_intervals, stable_topk, validate_k
+from .numerics import adaptive_stable_topk, distance_intervals, stable_topk, validate_k
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +38,7 @@ class BaselineResult:
     search_ns: int
     merge_ns: int
     candidate_count: int
+    exact_rechecks: int = 0
 
     @property
     def ids(self) -> tuple[int, ...]:
@@ -171,7 +172,9 @@ class PreparedFaissIndex:
                 bounds,
             )
             exact_ns = time.perf_counter_ns() - exact_start
-            return BaselineResult(ranked.hits, exact_ns, 0, requested)
+            return BaselineResult(
+                ranked.hits, exact_ns, 0, requested, ranked.exact_rechecks
+            )
 
         faiss.omp_set_num_threads(self.threads)
         start = time.perf_counter_ns()
@@ -255,7 +258,13 @@ class PreparedFaissIndex:
             q, records, matrix, ["flat_performance"] * len(records), k
         )
         rerank_ns = time.perf_counter_ns() - rerank_start
-        return BaselineResult(ranked.hits, search_ns, rerank_ns, requested)
+        return BaselineResult(
+            ranked.hits,
+            search_ns,
+            rerank_ns,
+            requested,
+            ranked.exact_rechecks,
+        )
 
     def search_and_merge_candidates(
         self,
@@ -327,7 +336,13 @@ class PreparedFaissIndex:
         bounds = distance_intervals(q, matrix)
         ranked = stable_topk(q, records, matrix, sources, k, bounds)
         merge_ns = time.perf_counter_ns() - merge_start
-        return BaselineResult(ranked.hits, search_ns, merge_ns, requested)
+        return BaselineResult(
+            ranked.hits,
+            search_ns,
+            merge_ns,
+            requested,
+            ranked.exact_rechecks,
+        )
 
     def search_and_merge_candidates_performance(
         self,
@@ -394,9 +409,15 @@ class PreparedFaissIndex:
             else np.empty((0, self.dimension), dtype=np.float32)
         )
         bounds = distance_intervals(q, matrix)
-        ranked = stable_topk(q, records, matrix, sources, k, bounds)
+        ranked = adaptive_stable_topk(q, records, matrix, sources, k, bounds)
         merge_ns = time.perf_counter_ns() - merge_start
-        return BaselineResult(ranked.hits, search_ns, merge_ns, requested)
+        return BaselineResult(
+            ranked.hits,
+            search_ns,
+            merge_ns,
+            requested,
+            ranked.exact_rechecks,
+        )
 
 
 def visible_unique_records(

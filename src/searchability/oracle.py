@@ -56,15 +56,27 @@ class OracleResult:
 
     @property
     def tau_squared(self) -> Fraction | None:
-        return None if not self.hits else self.hits[-1].squared_distance
+        return (
+            None
+            if self.population < self.requested_k
+            else self.hits[-1].squared_distance
+        )
 
     @property
     def tau_lower(self) -> float | None:
-        return None if not self.hits else self.hits[-1].distance_lower
+        return (
+            None
+            if self.population < self.requested_k
+            else self.hits[-1].distance_lower
+        )
 
     @property
     def tau_upper(self) -> float | None:
-        return None if not self.hits else self.hits[-1].distance_upper
+        return (
+            None
+            if self.population < self.requested_k
+            else self.hits[-1].distance_upper
+        )
 
 
 @dataclass(frozen=True, slots=True)

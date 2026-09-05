@@ -94,12 +94,152 @@ class SearchEngine:
         self._visible_group_cache: dict[
             int, tuple[tuple[Group, tuple[VectorRecord, ...], np.ndarray], ...]
         ] = {}
+        # SearchEngine owns one immutable DeltaStore.  Native packed views are
+        # therefore valid for this engine's lifetime and invalidated by making
+        # a new engine for a new Delta/catalog revision; snapshot remains part
+        # of the key because visibility changes the packed population.
+        self._native_view_cache: dict[int, object] = {}
 
     def prepare_candidates(
-        self, query: np.ndarray, *, snapshot_id: int, k: int, candidate_count: int
+        self,
+        query: np.ndarray,
+        *,
+        snapshot_id: int,
+        k: int,
+        candidate_count: int,
+        use_cached_view: bool = True,
     ) -> CandidateSet:
         return self.base.prepare_candidates(
-            query, snapshot_id=snapshot_id, k=k, candidate_count=candidate_count
+            query,
+            snapshot_id=snapshot_id,
+            k=k,
+            candidate_count=candidate_count,
+            use_cached_view=use_cached_view,
+        )
+
+    def _native_packed_view(self, snapshot_id: int) -> object:
+        cached = self._native_view_cache.get(snapshot_id)
+        if cached is not None:
+            return cached
+        from .native import build_packed_view
+
+        packed = build_packed_view(
+            self.delta, snapshot_id=snapshot_id, dimension=self.base.dimension
+        )
+        self._native_view_cache[snapshot_id] = packed
+        return packed
+
+    def prepare_native_query(
+        self,
+        query: np.ndarray,
+        *,
+        snapshot_id: int = 0,
+        k: int,
+        candidate_count: int = 64,
+        candidate_set: CandidateSet | None = None,
+    ) -> object:
+        """Validate/freeze C once for reuse by native F/N/P comparisons."""
+
+        from .native import prepare_native_query
+
+        return prepare_native_query(
+            self,
+            query,
+            snapshot_id=snapshot_id,
+            k=k,
+            candidate_count=candidate_count,
+            candidate_set=candidate_set,
+        )
+
+    def search_native_prepared(
+        self,
+        prepared_query: object,
+        *,
+        k: int,
+        beta: float = 0.0,
+        mode: str,
+        threshold_mode: str = "heap",
+        rank_strategy: str = "adaptive",
+        audit: bool = False,
+    ) -> SearchResult:
+        """Run an already bound native query without repeating C validation."""
+
+        from .native import PreparedNativeQuery, run_prepared_native
+
+        if not isinstance(prepared_query, PreparedNativeQuery):
+            raise TypeError("prepared_query must be PreparedNativeQuery")
+        return run_prepared_native(
+            self,
+            prepared_query,
+            k=k,
+            beta=beta,
+            mode=mode,  # type: ignore[arg-type]
+            threshold_mode=threshold_mode,  # type: ignore[arg-type]
+            rank_strategy=rank_strategy,  # type: ignore[arg-type]
+            audit=audit,
+        )
+
+    def search_native_full_scan(
+        self,
+        query: np.ndarray,
+        *,
+        k: int,
+        beta: float = 0.0,
+        snapshot_id: int = 0,
+        candidate_count: int = 64,
+        candidate_set: CandidateSet | None = None,
+        prepared_query: object | None = None,
+        threshold_mode: str = "heap",
+        rank_strategy: str = "adaptive",
+        audit: bool = False,
+    ) -> SearchResult:
+        prepared = prepared_query or self.prepare_native_query(
+            query,
+            snapshot_id=snapshot_id,
+            k=k,
+            candidate_count=candidate_count,
+            candidate_set=candidate_set,
+        )
+        return self.search_native_prepared(
+            prepared,
+            k=k,
+            beta=beta,
+            mode="F",
+            threshold_mode=threshold_mode,
+            rank_strategy=rank_strategy,
+            audit=audit,
+        )
+
+    def search_native_pruned(
+        self,
+        query: np.ndarray,
+        *,
+        k: int,
+        beta: float,
+        snapshot_id: int = 0,
+        candidate_count: int = 64,
+        candidate_set: CandidateSet | None = None,
+        prepared_query: object | None = None,
+        no_pruning: bool = False,
+        threshold_mode: str = "heap",
+        rank_strategy: str = "adaptive",
+        audit: bool = False,
+    ) -> SearchResult:
+        prepared = prepared_query or self.prepare_native_query(
+            query,
+            snapshot_id=snapshot_id,
+            k=k,
+            candidate_count=candidate_count,
+            candidate_set=candidate_set,
+        )
+        return self.search_native_prepared(
+            prepared,
+            k=k,
+            beta=beta,
+            mode="N" if no_pruning else "P",
+            threshold_mode=threshold_mode,
+            rank_strategy=rank_strategy,
+            audit=audit,
         )
 
     def _validate_candidate_binding(

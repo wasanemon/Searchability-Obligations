@@ -1,4 +1,7 @@
 .venv/
+build/
+*.egg-info/
+*.so
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -13,6 +16,7 @@ data/raw/
 data/processed/
 data/indexes/
 results/runs/
+results/native_recheck_runs/
 results/tmp/
 *.faiss
 *.fvecs
@@ -30,4 +34,3 @@ results/tmp/
 .vscode/
 *.swp
 .DS_Store
-

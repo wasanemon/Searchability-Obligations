@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools==84.0.0", "wheel==0.48.0"]
+requires = ["setuptools==84.0.0", "wheel==0.48.0", "pybind11==3.0.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -33,5 +33,5 @@ testpaths = ["tests"]
 markers = [
   "evaluation: full 10,000-case or resource-intensive validation",
   "crash: subprocess crash/fault-injection validation",
+  "native_fixed_seed(seed, case_count): machine-readable native randomized case metadata",
 ]
-

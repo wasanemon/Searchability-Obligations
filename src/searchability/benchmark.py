@@ -390,6 +390,18 @@ def _current_rss_bytes() -> int | None:
         return None
 
 
+def _cpu_affinity() -> list[int] | None:
+    """Return the scheduler-visible CPU set when the host exposes it."""
+
+    getter = getattr(os, "sched_getaffinity", None)
+    if getter is None:
+        return None
+    try:
+        return sorted(int(value) for value in getter(0))
+    except OSError:
+        return None
+
+
 def collect_environment(threads: int) -> dict[str, Any]:
     output = io.StringIO()
     with redirect_stdout(output):
@@ -402,6 +414,7 @@ def collect_environment(threads: int) -> dict[str, Any]:
         "machine": platform.machine(),
         "processor": platform.processor(),
         "cpu_count_logical": os.cpu_count(),
+        "cpu_affinity": _cpu_affinity(),
         "faiss_version": faiss.__version__,
         "faiss_compile_options": faiss.get_compile_options(),
         "faiss_threads": faiss.omp_get_max_threads(),

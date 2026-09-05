@@ -51,3 +51,26 @@ The benchmark retains two engineering ablations in every condition:
 grouped scanning with pruning disabled, and the pre-optimization final interval
 recomputation path. They separate the center/radius pruning effect from the
 small interval-carry optimization selected after the initial profile.
+
+## Issue #3 native recheck matrix
+
+`native_recheck_validation.json` is a separately namespaced validation study.
+It fixes SIFT Base 100k with Delta 0/1k/10k/100k, groups 64/128/512, and
+`k=1/10/100`; GIST Base 50k / Delta 5k is a high-dimensional anchor. The main
+family is SIFT Base 100k / Delta 10k / `k=10` / `C=64` / groups 128 with beta
+factors 0/.01/.05/.10. Four offline synthetic geometries are also included.
+Axes are changed one at a time rather than as a factorial search.
+
+Validation uses SIFT query IDs 0..199 only to calibrate absolute beta and
+200..399 for timing. The final policy and `holdout_manifest.json` pre-register
+the untouched SIFT interval 1200..2199. Centers, group membership/count, beta,
+and Base HNSW settings are not tuned on that holdout.
+
+The gate requires a real SIFT condition with Delta at least 1,000, a nonempty
+Delta-influence subset, passed native correctness, and paired 95% CI lower
+bound strictly above one against both F and A. A `NOT_PASSED` gate creates no
+final lock. `native_recheck_final_policy.json` fixes the three-session fresh
+evaluation and engineering thresholds; the decision step verifies it even on a
+negative gate, but no fresh-run field can authorize execution without a lock.
+Conditional HNSW references likewise cannot start before a fresh-final
+performance pass.

@@ -94,7 +94,17 @@ class BaseIndex:
             self.records, dimension=self.dimension, generation_id=self.generation_id
         )
         self._records_by_key = {record.key: record for record in self.records}
+        # BaseIndex is an immutable generation.  These caches are valid for the
+        # lifetime of that generation and are keyed by the complete MVCC
+        # snapshot ID; reinitializing/loading a generation clears both caches.
         self._visible_latest_cache: dict[int, tuple[VectorRecord, ...]] = {}
+        self._visible_latest_by_logical_cache: dict[int, dict[int, VectorRecord]] = {}
+        self._visible_view_cache_hits = 0
+        self._visible_view_cache_misses = 0
+        self._visible_view_legacy_rebuilds = 0
+        self._visible_view_cache_lookup_ns = 0
+        self._visible_view_cache_build_ns = 0
+        self._visible_view_legacy_rebuild_ns = 0
 
     @classmethod
     def from_arrays(
@@ -116,12 +126,46 @@ class BaseIndex:
     def visible_records(self, snapshot_id: int) -> tuple[VectorRecord, ...]:
         return tuple(record for record in self.records if record.visible_at(snapshot_id))
 
-    def _visible_latest_records(self, snapshot_id: int) -> tuple[VectorRecord, ...]:
+    def _visible_latest_records(
+        self, snapshot_id: int, *, use_cached_view: bool = True
+    ) -> tuple[VectorRecord, ...]:
         """Return one latest visible base version per logical ID, cached by snapshot."""
 
-        cached = self._visible_latest_cache.get(snapshot_id)
-        if cached is not None:
-            return cached
+        if use_cached_view:
+            cached = self._visible_latest_cache.get(snapshot_id)
+            if cached is not None:
+                return cached
+        visible_by_logical = self._visible_latest_by_logical(
+            snapshot_id, use_cached_view=use_cached_view
+        )
+        result = tuple(visible_by_logical.values())
+        if use_cached_view:
+            self._visible_latest_cache[snapshot_id] = result
+        return result
+
+    def _visible_latest_by_logical(
+        self, snapshot_id: int, *, use_cached_view: bool = True
+    ) -> dict[int, VectorRecord]:
+        """Return the cached visible-ID table for one immutable generation/view.
+
+        The returned mapping is private and must not be mutated.  Its only
+        invalidation event is :meth:`initialize_integrity_metadata`, which is
+        called when a generation is constructed or loaded and resets the cache.
+        """
+
+        if use_cached_view:
+            lookup_start = time.perf_counter_ns()
+            cached = self._visible_latest_by_logical_cache.get(snapshot_id)
+            self._visible_view_cache_lookup_ns += (
+                time.perf_counter_ns() - lookup_start
+            )
+            if cached is not None:
+                self._visible_view_cache_hits += 1
+                return cached
+            self._visible_view_cache_misses += 1
+        else:
+            self._visible_view_legacy_rebuilds += 1
+        build_start = time.perf_counter_ns()
         visible_by_logical: dict[int, VectorRecord] = {}
         for record in self.records:
             if not record.visible_at(snapshot_id):
@@ -132,9 +176,26 @@ class BaseIndex:
                 current.version_id,
             ):
                 visible_by_logical[record.logical_id] = record
-        result = tuple(visible_by_logical.values())
-        self._visible_latest_cache[snapshot_id] = result
-        return result
+        build_ns = time.perf_counter_ns() - build_start
+        if use_cached_view:
+            self._visible_view_cache_build_ns += build_ns
+            self._visible_latest_by_logical_cache[snapshot_id] = visible_by_logical
+        else:
+            self._visible_view_legacy_rebuild_ns += build_ns
+        return visible_by_logical
+
+    def visible_view_cache_stats(self) -> dict[str, int]:
+        """Expose cache/legacy-path counters for the Issue #3 ablation."""
+
+        return {
+            "hits": int(self._visible_view_cache_hits),
+            "misses": int(self._visible_view_cache_misses),
+            "legacy_rebuilds": int(self._visible_view_legacy_rebuilds),
+            "cached_snapshots": len(self._visible_latest_by_logical_cache),
+            "cache_lookup_ns": int(self._visible_view_cache_lookup_ns),
+            "cache_build_ns": int(self._visible_view_cache_build_ns),
+            "legacy_rebuild_ns": int(self._visible_view_legacy_rebuild_ns),
+        }
 
     def prepare_candidates(
         self,
@@ -143,6 +204,7 @@ class BaseIndex:
         snapshot_id: int,
         k: int,
         candidate_count: int,
+        use_cached_view: bool = True,
     ) -> CandidateSet:
         # Also supports validated persistence loaders created before integrity
         # metadata became part of BaseIndex's public construction contract.
@@ -150,6 +212,9 @@ class BaseIndex:
             not hasattr(self, "universe_hash")
             or not hasattr(self, "_records_by_key")
             or not hasattr(self, "_visible_latest_cache")
+            or not hasattr(self, "_visible_latest_by_logical_cache")
+            or not hasattr(self, "_visible_view_cache_hits")
+            or not hasattr(self, "_visible_view_cache_lookup_ns")
         ):
             self.initialize_integrity_metadata()
         q = as_float32_vector(query, name="query")
@@ -185,8 +250,10 @@ class BaseIndex:
                 available_visible_count=0,
                 fallback_reason="base_population_empty",
             )
-        visible = self._visible_latest_records(snapshot_id)
-        visible_by_logical = {record.logical_id: record for record in visible}
+        visible_by_logical = self._visible_latest_by_logical(
+            snapshot_id, use_cached_view=use_cached_view
+        )
+        visible = tuple(visible_by_logical.values())
         target = min(max(requested, 1), len(self.records))
         rejections = 0
         accepted: list[VectorRecord] = []

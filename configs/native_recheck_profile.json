@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "run_name": "native-recheck-old-python-profile",
+  "output_root": "results/native_recheck_runs/development",
+  "evidence_role": "calibration",
+  "threads": 1,
+  "warmup_queries": 1,
+  "repetitions": 1,
+  "query_block_size": 5,
+  "method_order_seed": 1431247299,
+  "throughput_queries": 0,
+  "throughput_repetitions": 1,
+  "independent_oracle_queries": 0,
+  "independent_oracle_max_population": 0,
+  "lb_audit_queries": 0,
+  "experiments": [
+    {
+      "id": "sift-old-python-profile",
+      "axis": "development_profile_only",
+      "dataset": {
+        "type": "texmex",
+        "name": "sift",
+        "root": "data/raw",
+        "n_base": 100000,
+        "n_delta": 10000,
+        "n_validation": 5,
+        "n_test": 5
+      },
+      "k": 10,
+      "candidate_count": 64,
+      "n_groups": 128,
+      "raw_pending_count": 100,
+      "center_training_size": 100000,
+      "group_seed": 0,
+      "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05],
+      "positive_beta_min": 1e-12,
+      "base_hnsw_ef_search": 128,
+      "hnsw_m": 32,
+      "hnsw_ef_construction": 200,
+      "hnsw_ef_search": [128, 512]
+    }
+  ]
+}

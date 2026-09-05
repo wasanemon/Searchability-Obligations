@@ -9,10 +9,14 @@ import pytest
 from searchability.groups import GroupDirectory
 from searchability.models import VectorRecord, as_float32_vector
 from searchability.numerics import (
+    DistanceIntervals,
+    RankedTopK,
+    adaptive_stable_topk,
     distance_intervals,
     exact_squared_l2 as implementation_squared_l2,
     lower_bound_fraction,
     sqrt_fraction_bracket,
+    stable_topk,
     validate_beta,
     validate_k,
 )
@@ -222,3 +226,98 @@ def test_exact_distance_rejects_mismatched_dimensions() -> None:
         exact_squared_l2(
             np.zeros(2, dtype=np.float32), np.zeros(3, dtype=np.float32)
         )
+
+
+def _ranking_records(vectors: np.ndarray) -> tuple[VectorRecord, ...]:
+    return tuple(
+        VectorRecord(logical_id=index + 10, version_id=0, vector=vector)
+        for index, vector in enumerate(vectors)
+    )
+
+
+def _hit_keys(result: RankedTopK) -> tuple[tuple[int, int], ...]:
+    return tuple(hit.key for hit in result.hits)
+
+
+def test_adaptive_topk_matches_stable_topk_at_ties() -> None:
+    query = np.zeros(1, dtype=np.float32)
+    vectors = np.asarray([[1.0], [-1.0], [1.0], [-1.0]], dtype=np.float32)
+    records = (
+        VectorRecord(9, 1, vectors[0]),
+        VectorRecord(3, 1, vectors[1]),
+        VectorRecord(3, 0, vectors[2]),
+        VectorRecord(7, 0, vectors[3]),
+    )
+    sources = ("test",) * len(records)
+
+    expected = stable_topk(query, records, vectors, sources, 3)
+    observed = adaptive_stable_topk(query, records, vectors, sources, 3)
+
+    assert _hit_keys(observed) == _hit_keys(expected) == ((3, 0), (3, 1), (7, 0))
+
+
+def test_adaptive_topk_exactly_resolves_transitive_overlap_chain() -> None:
+    query = np.zeros(1, dtype=np.float32)
+    vectors = np.asarray([[3.0], [1.0], [2.0], [4.0]], dtype=np.float32)
+    records = _ranking_records(vectors)
+    sources = ("test",) * len(records)
+    bounds = DistanceIntervals(
+        estimate=np.asarray([3.0, 1.0, 2.0, 4.0]),
+        lower=np.asarray([2.4, 0.9, 1.4, 3.9]),
+        upper=np.asarray([3.5, 1.5, 2.5, 4.1]),
+    )
+
+    expected = stable_topk(query, records, vectors, sources, 2, bounds)
+    observed = adaptive_stable_topk(query, records, vectors, sources, 2, bounds)
+
+    assert _hit_keys(observed) == _hit_keys(expected)
+    assert observed.exact_rechecks == 3
+
+
+def test_adaptive_topk_underfill_returns_every_row_in_exact_order() -> None:
+    query = np.zeros(1, dtype=np.float32)
+    vectors = np.asarray([[3.0], [1.0], [2.0]], dtype=np.float32)
+    records = _ranking_records(vectors)
+    sources = ("test",) * len(records)
+
+    expected = stable_topk(query, records, vectors, sources, 10)
+    observed = adaptive_stable_topk(query, records, vectors, sources, 10)
+
+    assert _hit_keys(observed) == _hit_keys(expected)
+    assert observed.tau_lower is observed.tau_upper is None
+    assert observed.exact_rechecks == 0
+
+
+def test_adaptive_topk_matches_stable_topk_on_fixed_random_inputs() -> None:
+    generator = np.random.default_rng(20260906)
+    for _ in range(100):
+        count = int(generator.integers(1, 40))
+        dimension = int(generator.integers(1, 12))
+        k = int(generator.integers(1, count + 4))
+        query = generator.integers(-4, 5, size=dimension).astype(np.float32)
+        vectors = generator.integers(-4, 5, size=(count, dimension)).astype(
+            np.float32
+        )
+        records = _ranking_records(vectors)
+        sources = ("random",) * count
+        bounds = distance_intervals(query, vectors)
+
+        expected = stable_topk(query, records, vectors, sources, k, bounds)
+        observed = adaptive_stable_topk(query, records, vectors, sources, k, bounds)
+
+        assert _hit_keys(observed) == _hit_keys(expected)
+
+
+def test_adaptive_topk_avoids_exact_work_for_separated_prefix() -> None:
+    query = np.zeros(1, dtype=np.float32)
+    vectors = np.arange(1, 21, dtype=np.float32)[:, None]
+    records = _ranking_records(vectors)
+    sources = ("test",) * len(records)
+    bounds = distance_intervals(query, vectors)
+
+    expected = stable_topk(query, records, vectors, sources, 5, bounds)
+    observed = adaptive_stable_topk(query, records, vectors, sources, 5, bounds)
+
+    assert _hit_keys(observed) == _hit_keys(expected)
+    assert expected.exact_rechecks == 5
+    assert observed.exact_rechecks == 1

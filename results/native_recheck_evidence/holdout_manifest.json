@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "study_id": "issue-3-native-recheck",
+  "decision": "query holdout registration before native validation timing",
+  "audit_date": "2026-09-06",
+  "audit_scope": {
+    "glob": "results/**/splits/*.json",
+    "all_existing_split_manifests_inspected": true,
+    "manifest_count": 44,
+    "dataset_manifest_counts": {
+      "texmex-sift": 22,
+      "texmex-gist": 6,
+      "synthetic_separate_generated_namespaces": 16
+    },
+    "sorted_sha256_inventory_sha256": "9eada7decebacdb3c7adb708499ad686370f9ead1c62766a3d96b00115a2ce9c",
+    "sorted_sha256_inventory_algorithm": "SHA-256 of the byte stream emitted by sha256sum over every split path, with paths sorted by NUL-safe byte order",
+    "texmex_and_native_profile_inventory_sha256": "cf55c1b6668a0360407ec3ca7f03c2543c7e8fdb2d02edc4dd20190cba917a0f",
+    "synthetic_inventory_sha256": "22b83cacbcc259b41bbaf191007dc82fe69c6ff6b9efc21e30376b7403e5849c",
+    "note": "Synthetic query IDs belong to separately generated datasets and cannot consume TEXMEX rows. Both completed and failed/incomplete historical run split manifests were included. The two ignored development-profile manifests were also inspected; both used SIFT query IDs 0..9 and do not change the union."
+  },
+  "query_id_digest_policy": {
+    "encoding": "ascending decimal query ID followed by LF for every member of the set",
+    "hash": "SHA-256",
+    "interval_notation": "half-open [start, stop)"
+  },
+  "pre_registered_final_policy": {
+    "path": "configs/native_recheck_final_policy.json",
+    "file_sha256": "2cc4c63556707cdd0bfd9ec459c1202d430b3f9d87da78f48dd1dee918bfd811",
+    "object_sha256": "44604d74f5e3feec590e5db41c216a223fc745015dfa2cdc5ff74de362509f6a",
+    "issue_fixed_decision_values": {
+      "primary_metric": "api_wall",
+      "performance_required_baselines": ["F", "A"],
+      "performance_paired_ci_lower_strictly_above": 1.0,
+      "engineering_GO_minimum_geometric_mean_speedup": 1.10,
+      "engineering_GO_maximum_p95_latency_ratio": 1.05,
+      "engineering_GO_requires_A_quality_match": true,
+      "required_process_sessions": 3,
+      "fresh_primary_dataset": "sift",
+      "fresh_primary_query_interval": [1200, 2200],
+      "fresh_primary_query_count": 1000
+    }
+  },
+  "sift": {
+    "query_file": "data/raw/sift/sift_query.fvecs",
+    "query_file_sha256": "f7fc9be140accdfd64116c2fa2365ecdb69b8f084970c6b0532db5ff79ac8fdc",
+    "query_file_bytes": 5160000,
+    "dimension": 128,
+    "available_query_rows": 10000,
+    "historical_split_manifest_count": 22,
+    "historically_used_query_ids": {
+      "interval": [0, 1200],
+      "count": 1200,
+      "is_exact_contiguous_union": true,
+      "set_sha256": "6b2fb420457ea634968c9d37941f81cf2931b449d336a83879fe1de229169af5"
+    },
+    "native_validation_selection": {
+      "beta_calibration_interval": [0, 200],
+      "measurement_interval": [200, 400],
+      "entire_loaded_interval": [0, 400],
+      "reused_non_independent": true
+    },
+    "pre_registered_fresh_final_holdout": {
+      "interval": [1200, 2200],
+      "count": 1000,
+      "set_sha256": "b2f9f483c46266c50b4a87918f29252b19df33c5f7e330abdfe90523600e9166",
+      "disjoint_from_historically_used_union": true,
+      "selected_before_native_validation_timing": true,
+      "loaded_by_native_validation": false,
+      "policy": "Do not read, tune on, or replace these rows unless a completed validation gate authorizes one locked final evaluation."
+    }
+  },
+  "gist": {
+    "query_file": "data/raw/gist/gist_query.fvecs",
+    "query_file_sha256": "0d1d620049de12da455ed7201e97cbab372c4d54d0e6dedbc8c503f62c911299",
+    "query_file_bytes": 3844000,
+    "dimension": 960,
+    "available_query_rows": 1000,
+    "historical_split_manifest_count": 6,
+    "historically_used_query_ids": {
+      "interval": [0, 1000],
+      "count": 1000,
+      "is_exact_contiguous_union": true,
+      "set_sha256": "8db91b2ee25d579493dbc2ca66417cc945e215b5424349884013834d43df7ac4"
+    },
+    "unused_query_rows": 0,
+    "native_validation_selection": {
+      "beta_calibration_interval": [0, 200],
+      "measurement_interval": [200, 400]
+    },
+    "independence_label": "reused_non_independent",
+    "fresh_holdout_claim_permitted": false,
+    "note": "All distributed GIST query rows already occur in historical split manifests. A new independent holdout cannot be claimed from this query file."
+  },
+  "selection_integrity": {
+    "sift_prior_and_holdout_intersection_count": 0,
+    "sift_validation_and_holdout_intersection_count": 0,
+    "validation_source_config_file_sha256": "939d940781a215c021a979a734c6121370fb17fb8cb0b177489d90a80200a9c2",
+    "validation_source_config_object_sha256": "76a8685ae6e8d0d2e736841201459d6a18ce00cf7405f9090167cee9a58bffc4",
+    "final_policy_path": "configs/native_recheck_final_policy.json",
+    "final_policy_file_sha256": "2cc4c63556707cdd0bfd9ec459c1202d430b3f9d87da78f48dd1dee918bfd811",
+    "final_policy_object_sha256": "44604d74f5e3feec590e5db41c216a223fc745015dfa2cdc5ff74de362509f6a",
+    "effective_config_hash_is_recorded_separately_by_each_run": true,
+    "no_query_vectors_loaded_to_choose_holdout": true,
+    "selection_basis": "Only saved query-ID manifests, file format row counts, paths, sizes, and checksums were inspected; vector values and search outcomes were not used."
+  }
+}

@@ -539,6 +539,36 @@ def test_delta_flat_same_c_reference_supplements_faiss_tie_boundary() -> None:
     assert performance.ids == (9,)
 
 
+def test_delta_flat_performance_merge_uses_adaptive_exact_ranking() -> None:
+    delta = tuple(
+        VectorRecord(20 + index, 0, np.asarray([distance], dtype=np.float32))
+        for index, distance in enumerate((2.0, 4.0, 6.0, 8.0))
+    )
+    index = PreparedFaissIndex(delta, kind="flat", threads=1)
+    base_records = (
+        VectorRecord(10, 0, np.asarray([1.0], dtype=np.float32)),
+        VectorRecord(11, 0, np.asarray([3.0], dtype=np.float32)),
+    )
+    candidates = CandidateSet(
+        records=base_records,
+        vectors=np.asarray([[1.0], [3.0]], dtype=np.float32),
+        candidate_hash="frozen-c",
+        visibility_rejections=0,
+        search_ns=0,
+        requested_count=2,
+    )
+
+    result = index.search_and_merge_candidates_performance(
+        np.asarray([0.0], dtype=np.float32),
+        k=3,
+        base_candidates=candidates,
+        ann_candidate_count=4,
+    )
+
+    assert result.ids == (10, 20, 11)
+    assert result.exact_rechecks == 1
+
+
 def test_flat_performance_path_is_distinct_from_exact_truth_on_tie() -> None:
     records = (
         VectorRecord(9, 0, np.asarray([+1.0], dtype=np.float32)),
