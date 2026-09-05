@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-05 21:36 (Asia/Tokyo)
+Last updated: 2026-09-05 21:39 (Asia/Tokyo)
 
 ## Scope and source status
 
@@ -359,6 +359,15 @@ make test
   supported, and H3 is supported only for the tested reference lifecycle.
   The single overall decision in `reports/REPORT_ja.md` is therefore
   `NOT_SUPPORTED_IN_TESTED_REGIME`.
+- A final independent report audit identified one presentation gap rather than
+  a result change: Issue #1 explicitly asks for latency on queries where Delta
+  affects the answer and for update-skew effects. The report now gives the
+  stored influence-subset p50 pairs for SIFT initial (22.414/81.740 ms), GIST
+  reduced (111.276/176.932 ms), and SIFT Delta=100,000 (27.619/567.678 ms), in
+  each case Delta Flat / beta=0 pruning. It also records the clean synthetic
+  Delta-near stress: 0% group skip, 24/24 Delta vectors read, and 1.668/2.437 ms.
+  These values were independently read from the final and clean-smoke summaries;
+  they do not alter the H1/H2/H3 decisions.
 
 ## Current-source verification and smoke
 

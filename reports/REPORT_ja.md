@@ -232,6 +232,12 @@ generation の file/fsync/rename/manifest/catalog 境界、pin/recover/conservat
 
 warnings は NumPy が optional PyYAML の未導入を知らせるものだけで、隠さず出力に残した。
 
+更新が query 近傍へ偏る影響は、clean smoke の `synthetic-delta-near-queries` でも明示的に確認した。
+8 query の小規模 calibration では beta=0 の group skip は 0%、平均 read は両方式とも Delta 全 24
+vector、E2E p50 は Delta Flat 1.668 ms に対して pruning 2.437 ms だった。近傍更新が各 group の
+下界を閾値以下にするため scan を省けず、管理 overhead だけが残る負条件である。この smoke は
+pipeline stress であり、下記 TEXMEX final 結果の標本数を水増しするものではない。
+
 ## 6. 主結果
 
 ### 6.1 SIFT initial
@@ -252,7 +258,8 @@ p50/max は `0.211338/2.478150`、`10.200015/12.403919`、`22.791148/24.805021` 
 
 Delta が same-C reference top-k に入る query は 51.9%。Delta exact-neighbor capture は repetition を
 query 内で畳んだ incidence で 909/909。Delta-influence subset の exact recall は 0.99904 で、全体の
-0.9989 と同様、残差は主に frozen Base candidate 側である。
+0.9989 と同様、残差は主に frozen Base candidate 側である。同 subset の E2E p50 は Delta Flat
+22.414 ms、beta=0 pruning 81.740 ms で、更新が実際に top-k へ入る query に限定しても逆転しない。
 
 ### 6.2 GIST reduced initial
 
@@ -267,7 +274,8 @@ query 内で畳んだ incidence で 909/909。Delta-influence subset の exact r
 requested beta は `.0115366/.0576829/.115366`、certified max は
 `.0113544/.0573299/.115342`、observed upper max は 0。Delta influence は 58.0%、unique-query
 Delta exact-neighbor capture は 707/707、subset exact recall は 0.98642 だった。GIST は 960 次元で
-radius bound が弱く、beta を増やしても vector read はわずかしか減らなかった。
+radius bound が弱く、beta を増やしても vector read はわずかしか減らなかった。Delta-influence
+subset の E2E p50 も Delta Flat 111.276 ms 対 beta=0 pruning 176.932 ms だった。
 
 ### 6.3 SIFT Delta=100,000
 
@@ -279,7 +287,8 @@ radius bound が弱く、beta を増やしても vector read はわずかしか�
 
 Delta influence は 98.5%、capture は 953/953。positive beta requested `12.084539`、certified
 p50/max `9.749569/12.084080`、observed max 0。Delta が大きいほど Flat の vectorized scan が有利で、
-Python/group overhead は償却されなかった。
+Python/group overhead は償却されなかった。Delta-influence subset の E2E p50 は Delta Flat
+27.619 ms 対 beta=0 pruning 567.678 ms である。
 
 ## 7. 補助 baseline の品質・速度
 
