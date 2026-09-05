@@ -102,13 +102,37 @@ def test_rq_answers_report_counts_and_descriptive_mechanism_metrics() -> None:
         "candidates": [
             {
                 "real_non_degenerate": True,
+                "sift_primary_for_fresh_holdout": True,
+                "delta_influence_queries": 1,
                 "experiment_id": "sift-initial",
                 "proposed_method": "native_P_beta0",
                 "comparison_outcomes": {
                     "F": comparison("F", 1.2, True),
                     "A": comparison("A", 0.9, False),
                 },
-            }
+            },
+            {
+                "real_non_degenerate": True,
+                "sift_primary_for_fresh_holdout": True,
+                "delta_influence_queries": 1,
+                "experiment_id": "sift-k-1",
+                "proposed_method": "native_P_beta0",
+                "comparison_outcomes": {
+                    "F": comparison("F", 1.3, True),
+                    "A": comparison("A", 0.95, False),
+                },
+            },
+            {
+                "real_non_degenerate": True,
+                "sift_primary_for_fresh_holdout": False,
+                "delta_influence_queries": 1,
+                "experiment_id": "gist-initial",
+                "proposed_method": "native_P_beta0",
+                "comparison_outcomes": {
+                    "F": comparison("F", 0.9, False),
+                    "A": comparison("A", 0.8, False),
+                },
+            },
         ],
     }
     summary = {
@@ -159,7 +183,15 @@ def test_rq_answers_report_counts_and_descriptive_mechanism_metrics() -> None:
     }
     audits = {
         "sift-initial": [
-            {"rows": [{"exact_min_l2_lower": 2.0, "lb_lower": 0.5}]}
+            {
+                "rows": [
+                    {
+                        "action": "scan",
+                        "exact_min_l2_lower": 2.0,
+                        "lb_lower": 0.5,
+                    }
+                ]
+            }
         ]
     }
     rq1, rq2, rq3 = _rq_result_answers(
@@ -169,13 +201,24 @@ def test_rq_answers_report_counts_and_descriptive_mechanism_metrics() -> None:
         builds=builds,
         audits=audits,
     )
-    assert "1 件中" in rq1 and "通過した候補は 1 件" in rq1
+    assert "事前指定 main `sift-initial` の F/P geomean 範囲は 1.200–1.200" in rq1
+    assert "gate-eligible SIFT 候補 2 件中、F/P criterion 通過は 2 件" in rq1
+    assert "記述対象は計 3 件（GIST anchor 1 件を含み、その F/P 通過は 0/1）" in rq1
+    assert "secondary sweep 上の事後的最大 F/P=1.300" in rq1
+    assert "事前指定 main family の確認的要約とは区別する" in rq1
+    assert "事前登録済みのgate candidate 集合には含まれる" in rq1
     assert "validation gate は `NOT_PASSED`" in rq1
-    assert "通過した候補は 0 件" in rq2 and "2 rows / 1 queries" in rq2
-    assert "N/P median=1.100" in rq3
-    assert "group-skip fraction median=0.750" in rq3
-    assert "exact-min−LB gap median/p95=1.500/1.500" in rq3
-    assert "有限 break-even は 1/1" in rq3
+    assert "`selected_candidate` は `null`" in rq1
+    assert "事前指定 main `sift-initial` の A/P geomean 範囲は 0.900–0.900" in rq2
+    assert "A/P timing+quality criterion 通過は 0 件" in rq2
+    assert "GIST anchor のA/P 通過は 0/1" in rq2
+    assert "secondary sweep 上の事後的最大 A/P=0.950" in rq2
+    assert "4 rows / 2 queries" in rq2
+    assert "N/P geomean 範囲=1.100–1.100" in rq3
+    assert "median skipped groups=3.0–3.0/4" in rq3
+    assert "scan gap median/p95=1.500/1.500 L2" in rq3
+    assert "有限 break-even は 1/1 operating points（30.0–30.0 queries）" in rq3
+    assert "L2 gap を pooled aggregate しない" in rq3
 
 
 def test_negative_report_accepts_absent_final_artifacts_and_rejects_wrong_verdict(
@@ -193,6 +236,9 @@ def test_negative_report_accepts_absent_final_artifacts_and_rejects_wrong_verdic
     )
     assert loaded["verdict"] == "NOT_SUPPORTED_IN_TESTED_REGIME"
     assert "作成せず" in section
+    assert "fresh-final holdout estimate ではない" in section
+    assert "| final_status | `NOT_RUN_GATE_NOT_PASSED` |" in section
+    assert "| selected_candidate | `null` |" in section
 
     decision["verdict"] = "INCONCLUSIVE"
     _write(paths["decision_path"], decision)
@@ -526,7 +572,8 @@ def test_measured_ablation_table_is_complete_and_fail_closed() -> None:
     assert len(table) == 5
     assert "P rescan → heap" in rendered
     assert "F all-exact → adaptive" in rendered
-    assert "Base cached → legacy rebuild" in rendered
+    assert "Base legacy rebuild → cached" in rendered
+    assert "3.000" in rendered
     assert "**nonpaired**" in rendered
     assert "A-reference → A" in rendered and "exact rechecks" in rendered
 

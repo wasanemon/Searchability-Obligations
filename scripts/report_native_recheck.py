@@ -440,7 +440,7 @@ def _ablation_table(
     return [
         f"| P rescan → heap | micro p50 ms | {_fmt(p_before)} | {_fmt(p_after)} | {_fmt(p_ratio)} | query-paired |",
         f"| F all-exact → adaptive | micro p50 ms | {_fmt(f_before)} | {_fmt(f_after)} | {_fmt(f_ratio)} | query-paired |",
-        f"| Base cached → legacy rebuild | audit wall p50 ms | {_fmt(cached)} | {_fmt(legacy)} | {_fmt(1.0 / cache_ratio)} | query-paired; candidate hash/key identical |",
+        f"| Base legacy rebuild → cached | audit wall p50 ms | {_fmt(legacy)} | {_fmt(cached)} | {_fmt(cache_ratio)} | query-paired; candidate hash/key identical |",
         f"| old P → packed/native P | micro p50 ms | {_fmt(old_micro)} | {_fmt(new_micro)} | {_fmt(old_micro / new_micro)} | **nonpaired** development 5 queries vs validation queries; old E2E/new API={_fmt(old_e2e)}/{_fmt(new_api)} ms |",
         f"| A-reference → A | API p50 ms | {_fmt(a_ref)} | {_fmt(a)} | {_fmt(a_ratio)} | query-paired; recall med/min {_fmt(ref_recall, 4)}/{_fmt(ref_recall_min, 4)} → {_fmt(a_recall, 4)}/{_fmt(a_recall_min, 4)}; exact rechecks {ref_recheck_text} → {_fmt(a_rechecks, 1)} |",
     ]
@@ -582,13 +582,36 @@ def _rq_result_answers(
     builds: Mapping[str, Sequence[Mapping[str, Any]]],
     audits: Mapping[str, Sequence[Mapping[str, Any]]],
 ) -> tuple[str, str, str]:
-    candidates = [
+    real_candidates = [
         value
         for value in gate.get("candidates", [])
         if isinstance(value, dict) and value.get("real_non_degenerate") is True
     ]
+    gate_candidates = [
+        value
+        for value in real_candidates
+        if value.get("sift_primary_for_fresh_holdout") is True
+        and int(value.get("delta_influence_queries", 0)) > 0
+    ]
+    gist_candidates = [
+        value
+        for value in real_candidates
+        if str(value.get("experiment_id", "")).startswith("gist-")
+    ]
+    main_candidates = [
+        value
+        for value in gate_candidates
+        if value.get("experiment_id") == "sift-initial"
+    ]
+    secondary_candidates = [
+        value
+        for value in gate_candidates
+        if value.get("experiment_id") != "sift-initial"
+    ]
 
-    def role_result(role: str) -> tuple[int, str, int, int]:
+    def role_result(
+        candidates: Sequence[Mapping[str, Any]], role: str
+    ) -> tuple[int, list[tuple[float, Mapping[str, Any], Mapping[str, Any]]], int, int]:
         passed = 0
         comparisons: list[tuple[float, Mapping[str, Any], Mapping[str, Any]]] = []
         mismatch_rows = 0
@@ -615,92 +638,168 @@ def _rq_result_answers(
                 mismatch_queries += int(
                     comparison.get("baseline_quality_mismatch_queries_retained", 0)
                 )
-        if not comparisons:
-            best = "eligible comparison なし"
-        else:
-            value, candidate, comparison = max(comparisons, key=lambda item: item[0])
-            best = (
-                f"最良 {role}/P={_fmt(value)} "
-                f"[CI {_fmt(comparison.get('bootstrap_95pct_lower'))}, "
-                f"{_fmt(comparison.get('bootstrap_95pct_upper'))}] "
-                f"(`{candidate.get('experiment_id')}` / "
-                f"`{candidate.get('proposed_method')}`)"
-            )
-        return passed, best, mismatch_rows, mismatch_queries
+        return passed, comparisons, mismatch_rows, mismatch_queries
 
-    f_passed, f_best, _, _ = role_result("F")
-    a_passed, a_best, mismatch_rows, mismatch_queries = role_result("A")
-    eligible_count = len(candidates)
-    validation_conclusion = (
-        "validation gate は `PASSED` し fresh final を許可した。"
-        if gate.get("gate_status") == "PASSED"
-        else "validation gate は `NOT_PASSED` で fresh final を許可しなかった。"
-    )
+    def main_range(role: str) -> str:
+        _, comparisons, _, _ = role_result(main_candidates, role)
+        if not comparisons:
+            return f"事前指定 main `sift-initial` の {role}/P comparison なし"
+        values = [item[0] for item in comparisons]
+        if role == "F":
+            supported = sum(
+                float(item[2].get("bootstrap_95pct_lower", float("-inf"))) > 1.0
+                for item in comparisons
+            )
+            ci_text = f"95% CI lower > 1: {supported}/{len(comparisons)}"
+        else:
+            supported = sum(
+                float(item[2].get("bootstrap_95pct_upper", float("inf"))) < 1.0
+                for item in comparisons
+            )
+            ci_text = f"95% CI upper < 1: {supported}/{len(comparisons)}"
+        return (
+            f"事前指定 main `sift-initial` の {role}/P geomean 範囲は "
+            f"{_fmt(min(values))}–{_fmt(max(values))}（{ci_text}）"
+        )
+
+    def secondary_maximum(role: str) -> str:
+        _, comparisons, _, _ = role_result(secondary_candidates, role)
+        if not comparisons:
+            return "secondary sweep の比較なし"
+        value, candidate, comparison = max(comparisons, key=lambda item: item[0])
+        return (
+            f"secondary sweep 上の事後的最大 {role}/P={_fmt(value)} "
+            f"[CI {_fmt(comparison.get('bootstrap_95pct_lower'))}, "
+            f"{_fmt(comparison.get('bootstrap_95pct_upper'))}] "
+            f"(`{candidate.get('experiment_id')}` / "
+            f"`{candidate.get('proposed_method')}`)は記述のみで、"
+            "事前指定 main family の確認的要約とは区別する（事前登録済みの"
+            "gate candidate 集合には含まれる）"
+        )
+
+    f_passed, _, _, _ = role_result(gate_candidates, "F")
+    a_passed, _, mismatch_rows, mismatch_queries = role_result(gate_candidates, "A")
+    gist_f_passed, _, _, _ = role_result(gist_candidates, "F")
+    gist_a_passed, _, _, _ = role_result(gist_candidates, "A")
+    if gate.get("gate_status") == "PASSED":
+        validation_conclusion = "validation gate は `PASSED` し fresh final を許可した。"
+    else:
+        selected_candidate = json.dumps(
+            gate.get("selected_candidate"), ensure_ascii=False, sort_keys=True
+        )
+        validation_conclusion = (
+            "validation gate は `NOT_PASSED` で fresh final を許可しなかった。"
+            f"`selected_candidate` は `{selected_candidate}`。"
+        )
     rq1 = (
-        f"eligible real/non-degenerate 候補 {eligible_count} 件中、F/P criterion を"
-        f"通過した候補は {f_passed} 件。{f_best}。{validation_conclusion}"
+        f"{main_range('F')}。gate-eligible SIFT 候補 {len(gate_candidates)} 件中、"
+        f"F/P criterion 通過は {f_passed} 件。real/non-degenerate の"
+        f"記述対象は計 {len(real_candidates)} 件（GIST anchor {len(gist_candidates)} 件を含み、"
+        f"その F/P 通過は {gist_f_passed}/{len(gist_candidates)}）。"
+        f"{secondary_maximum('F')}。{validation_conclusion}"
     )
     rq2 = (
-        f"同じ {eligible_count} 候補中、A/P timing+quality criterion を通過した候補は "
-        f"{a_passed} 件。{a_best}。A mismatch は {mismatch_rows} rows / "
+        f"{main_range('A')}。gate-eligible SIFT 候補 {len(gate_candidates)} 件中、"
+        f"A/P timing+quality criterion 通過は {a_passed} 件。GIST anchor の"
+        f"A/P 通過は {gist_a_passed}/{len(gist_candidates)}。{secondary_maximum('A')}。"
+        f"gate-eligible SIFT の A mismatch は {mismatch_rows} rows / "
         f"{mismatch_queries} queries（timing から除外せず保持）。"
     )
 
-    n_over_p_values: list[float] = []
-    for experiment, roles in summary.get("methods_by_experiment", {}).items():
-        for p_method in roles.get("P", []):
-            value = _n_over_p(rows, str(experiment), str(p_method))
-            if value is not None and math.isfinite(value):
-                n_over_p_values.append(value)
-    skip_fractions: list[float] = []
-    for row in rows:
-        if row.get("method_role") != "P":
-            continue
-        receipt = row.get("receipt")
-        if not isinstance(receipt, dict):
-            continue
-        skipped = int(receipt.get("groups_skipped", 0))
-        scanned = int(receipt.get("groups_scanned", 0))
-        if skipped + scanned > 0:
-            skip_fractions.append(skipped / (skipped + scanned))
-    geometry_gaps = [
-        float(item["exact_min_l2_lower"]) - float(item["lb_lower"])
-        for values in audits.values()
-        for audit in values
-        for item in audit.get("rows", [])
-        if isinstance(item, dict)
-        and item.get("exact_min_l2_lower") is not None
-        and item.get("lb_lower") is not None
+    main_roles = summary.get("methods_by_experiment", {}).get("sift-initial", {})
+    main_p_methods = [str(value) for value in main_roles.get("P", [])]
+    n_over_p_values = [
+        value
+        for method in main_p_methods
+        for value in (_n_over_p(rows, "sift-initial", method),)
+        if value is not None and math.isfinite(value)
     ]
+    skipped_group_medians = [
+        value
+        for method in main_p_methods
+        for value in (_component_median(rows, "sift-initial", method, "groups_skipped"),)
+        if value is not None and math.isfinite(value)
+    ]
+    group_counts = {
+        int(receipt.get("groups_skipped", 0)) + int(receipt.get("groups_scanned", 0))
+        for row in rows
+        if row.get("experiment_id") == "sift-initial"
+        and row.get("method") in main_p_methods
+        and isinstance((receipt := row.get("receipt")), dict)
+        and int(receipt.get("groups_skipped", 0))
+        + int(receipt.get("groups_scanned", 0))
+        > 0
+    }
+    geometry_parts: list[str] = []
+    for action in ("scan", "skip"):
+        gaps = [
+            max(0.0, float(item["exact_min_l2_lower"]) - float(item["lb_lower"]))
+            for audit in audits.get("sift-initial", [])
+            for item in audit.get("rows", [])
+            if isinstance(item, dict)
+            and item.get("action") == action
+            and item.get("exact_min_l2_lower") is not None
+            and item.get("lb_lower") is not None
+        ]
+        if gaps:
+            geometry_parts.append(
+                f"{action} gap median/p95={_fmt(statistics.median(gaps))}/"
+                f"{_fmt(float(np.percentile(gaps, 95)))} L2"
+            )
     build_costs = [
         float(groups.get("center_training_ns", 0))
         + float(groups.get("assignment_ns", 0))
         + float(groups.get("packing_and_radius_ns", 0))
-        for values in builds.values()
-        for build in values
+        for build in builds.get("sift-initial", [])
         if isinstance(build.get("groups"), dict)
         for groups in (build["groups"],)
     ]
-    finite_break_even = 0
-    break_even_total = 0
-    for experiment, roles in summary.get("methods_by_experiment", {}).items():
-        f_methods = roles.get("F", [])
-        if not f_methods:
-            continue
-        for p_method in roles.get("P", []):
-            result = _break_even(
-                rows, builds, str(experiment), str(f_methods[0]), str(p_method)
+    main_f_methods = [str(value) for value in main_roles.get("F", [])]
+    break_even_results = (
+        [
+            _break_even(
+                rows, builds, "sift-initial", main_f_methods[0], p_method
             )
-            break_even_total += 1
-            finite_break_even += int(bool(result["finite"]))
+            for p_method in main_p_methods
+        ]
+        if main_f_methods
+        else []
+    )
+    finite_break_even_values = [
+        float(value["q_break_even"])
+        for value in break_even_results
+        if value["finite"] and value["q_break_even"] is not None
+    ]
+    n_over_p_text = (
+        "—"
+        if not n_over_p_values
+        else f"{_fmt(min(n_over_p_values))}–{_fmt(max(n_over_p_values))}"
+    )
+    group_total_text = (
+        str(next(iter(group_counts))) if len(group_counts) == 1 else "condition別"
+    )
+    skipped_text = (
+        "—"
+        if not skipped_group_medians
+        else f"{_fmt(min(skipped_group_medians), 1)}–{_fmt(max(skipped_group_medians), 1)}"
+    )
+    break_even_text = (
+        "有限値なし"
+        if not finite_break_even_values
+        else f"{_fmt(min(finite_break_even_values), 1)}–{_fmt(max(finite_break_even_values), 1)} queries"
+    )
+    geometry_text = "、".join(geometry_parts) if geometry_parts else "geometry gap evidence なし"
     rq3 = (
-        f"N/P median={_fmt(None if not n_over_p_values else statistics.median(n_over_p_values))}、"
-        f"P group-skip fraction median={_fmt(None if not skip_fractions else statistics.median(skip_fractions))}、"
-        f"exact-min−LB gap median/p95={_fmt(None if not geometry_gaps else statistics.median(geometry_gaps))}/"
-        f"{_fmt(None if not geometry_gaps else float(np.percentile(geometry_gaps, 95)))} L2。"
-        f"incremental group build median={_fmt(None if not build_costs else statistics.median(build_costs) / 1e6)} ms、"
-        f"有限 break-even は {finite_break_even}/{break_even_total} operating points。"
-        "これは保存 evidence の記述的対応であり、単独では勝敗原因を因果確定しない。"
+        f"事前指定 main `sift-initial` 内で N/P geomean 範囲={n_over_p_text}、"
+        f"P の operating-point別 median skipped groups={skipped_text}/{group_total_text}。"
+        f"{geometry_text}。"
+        f"incremental group build median="
+        f"{_fmt(None if not build_costs else statistics.median(build_costs) / 1e6)} ms、"
+        f"F 比の有限 break-even は {len(finite_break_even_values)}/{len(break_even_results)} "
+        f"operating points（{break_even_text}）。"
+        "他 dataset/secondary axis は層別表の記述値とし、異なる次元・座標尺度の"
+        "L2 gap を pooled aggregate しない。これは保存 evidence の記述的対応であり、"
+        "単独では勝敗原因を因果確定しない。"
     )
     return rq1, rq2, rq3
 
@@ -797,11 +896,28 @@ def _final_evidence(
             or hnsw_path.exists()
         ):
             raise RuntimeError("negative final decision violates the no-lock/no-load policy")
+        selected_candidate = json.dumps(
+            decision.get("selected_candidate"), ensure_ascii=False, sort_keys=True
+        )
         return decision, (
             "## Fresh final\n\n"
-            "Validation は `NOT_PASSED` で終了した。final lock/config は作成せず、"
+            "Validation は `NOT_PASSED` で終了した。ここでの研究 verdict は"
+            "事前規定の validation stopping rule によるものであり、"
+            "fresh-final holdout estimate ではない。candidate lock と final run config は"
+            "作成せず、"
             "SIFT fresh query 1200..2199 と final-only HNSW reference は読み込んでいない。"
-            "工学的導入判定は `NO_GO` である。"
+            "工学的導入判定は `NO_GO` である。\n\n"
+            "| final_decision field | value |\n"
+            "|---|---|\n"
+            f"| final_status | `{decision.get('final_status')}` |\n"
+            f"| validation_gate_status | `{decision.get('validation_gate_status')}` |\n"
+            f"| performance_gate_status | `{decision.get('performance_gate_status')}` |\n"
+            f"| performance_verdict | `{decision.get('performance_verdict')}` |\n"
+            f"| engineering_decision | `{decision.get('engineering_decision')}` |\n"
+            f"| selected_candidate | `{selected_candidate}` |\n"
+            f"| lock_created | `{str(decision.get('lock_created')).lower()}` |\n"
+            f"| large_final_started | `{str(decision.get('large_final_started')).lower()}` |\n"
+            f"| fresh_sift_holdout_loaded | `{str(decision.get('fresh_sift_holdout_loaded')).lower()}` |"
         )
     if status not in {
         "AUTHORIZED_NOT_YET_RUN",
@@ -1320,7 +1436,7 @@ def main() -> int:
     ]
     content = f"""# Native kernel 再検証報告（Issue #3）
 
-最終 verdict: **`{verdict}`**、工学的導入判定: **`{engineering_decision}`**（validation gate: **{gate_status}**）。{final_statement}
+研究全体の事前規定 stopping-rule verdict: **`{verdict}`**、工学的導入判定: **`{engineering_decision}`**（validation gate: **{gate_status}**、final status: **`{final_status}`**）。これは fresh-final holdout estimate ではない。{final_statement}
 
 本報告は [GitHub Issue #3](https://github.com/wasanemon/Searchability-Obligations/issues/3) の手順に従い、旧 Python 実装の遅さと center-radius pruning 自体の限界を分離して再検証した結果である。ordinary L2 と Faiss の squared-L2 を区別し、全 native 保証経路は [`docs/native_numerics.md`](../docs/native_numerics.md) の interval/error-bound と厳密境界順序を用いた。
 
@@ -1382,9 +1498,9 @@ match は同一 `C` の O との ordered key 一致率、recall は全 visible e
 
 ## 段階 ablation と原因分解
 
-以下は保存された実測値であり、`before/after` 比は 1 より大きいほど after が速い。旧 P 比較だけは query 集合が異なるため paired 推論には使わない。
+以下は保存された実測値である。paired 行の `before/after ratio` は query-paired geometric mean であり、p50 列同士の単純比とは限らない。1 より大きいほど after が速い。旧 P 比較だけは query 集合が異なるため、表示 p50 の比を記述するだけで paired 推論には使わない。
 
-| stage | metric | before | after | before/after | scope / quality |
+| stage | metric | before | after | before/after ratio | scope / quality |
 |---|---|---:|---:|---:|---|
 {chr(10).join(ablation_rows)}
 
@@ -1418,7 +1534,7 @@ current implementation-tree / native shared-object SHA-256 はそれぞれ `{cur
 
 保存 raw がある環境では `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 make native-report NATIVE_VALIDATION_INPUT="{args.input}"` で checksum 検証から report を再生成できる。実験自体の再実行は同じ 1-thread 環境で `make native-validate`。raw JSONL は非圧縮であり、別の圧縮 artifact は主張しない。
 
-追跡対象の summary/gate と deterministic representative sample だけでも、verdict、run/completion identity、全 raw shard checksum inventory、代表 row は第三者検査できる。ただし gitignore 済み raw/run directory がなければ全 query 行の再集計、ancillary audit の再読込、latency 分布の独立再計算はできず、summary から raw evidence を復元することもできない。
+追跡対象の summary/gate、deterministic representative sample、correctness、final decision、policy/holdout registration を合わせれば、研究 verdict、run/completion identity、全 raw shard checksum inventory、代表 row は第三者検査できる。summary/gate/representative の三点だけで確認できるのは validation outcome までである。ただし gitignore 済み raw/run directory がなければ全 query 行の再集計、ancillary audit の再読込、latency 分布の独立再計算はできず、summary から raw evidence を復元することもできない。
 
 - analysis SHA-256: `{file_sha256(args.summary)}`
 - gate SHA-256: `{file_sha256(args.gate)}`

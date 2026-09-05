@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-06 01:57 (Asia/Tokyo)
+Last updated: 2026-09-06 02:45 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -277,6 +277,110 @@ Outcome: offline compiled-path smoke passed and did not authorize final work.
 The next resumable command is `make native-validate`, using the already frozen
 validation config and correctness evidence. No source, test, config, policy, or
 holdout file may change during that run.
+
+## Issue #3 first formal validation and independent report audit
+
+- The first source-frozen `make native-validate` completed run
+  `native-recheck-validation-20260905T165354658861Z-227a918c57` in about
+  34 minutes. It completed all 84/84 blocks and preserved 84 raw shards,
+  42,064 rows, and 288,078,673 bytes. Thirteen experiment cells and 2,056
+  unique queries were present; 54 ancillary artifacts and every raw checksum
+  verified. Native rows totalled 27,672, with distinct positive native call
+  indices and no backend, correctness, beta-chain, lower-bound soundness, or
+  strict-predicate failures. The 325 audited query/group sets contained 35,125
+  decisions (25,248 scans and 9,877 skips).
+- The run's implementation/config identities were respectively
+  `3f11bc88369f879a560b5251e883d5d641e48b874843ba2fb3630028ec8c75c0`
+  and `227a918c5741f10ac138ce45217ac583dc118f044679ab44e64587c3b8da8925`.
+  Its completion SHA-256 was
+  `83f998af38606ccd0f896a9b60ddbcb86bba6a35f8f1dcc95a01f8b42f6f8176`
+  and raw-inventory SHA-256 was
+  `2a24974c12311c92ac834a7271f2300773cb03635f79e371d274ab594c5f91f8`.
+  Independently regenerated summary/gate/representative SHA-256 values were
+  `46bec044213bea0d90c9679163cbd1b7c7087f4e6112d729e93b2d7a688055ce`,
+  `2e14434ef016ca9a58d05398562f4b1fe34918725aa42c29a6dbb417618a5652`,
+  and `0c7f7af108b508018ba902ee59dc88ccb08db4561015541217a16a8609d7813e`.
+- The validation gate was `NOT_PASSED`: all 16 non-degenerate SIFT candidates
+  beat certified F at the paired-CI criterion, but none beat optimized A.
+  For the pre-specified `sift-initial` family, F/P API-wall geomeans ranged
+  1.097--1.131 while A/P ranged 0.582--0.600. Same-C quality mismatch counts
+  were zero. `make native-evaluate` therefore wrote decision SHA-256
+  `40512a3e821dc100b5be050f110f56cc8c35705e45567c0b1accf2901e43ef15`
+  with verdict `NOT_SUPPORTED_IN_TESTED_REGIME`, engineering decision `NO_GO`,
+  and `final_status=NOT_RUN_GATE_NOT_PASSED`; no final lock/config/summary/gate,
+  fresh-holdout load, final HNSW authorization, or final HNSW directory was
+  created.
+- Two independent read-only audits found no numerical, raw-inventory,
+  ablation, geometry, break-even, gate, or final-decision error. One audit did
+  find four publication-level interpretation defects in the generated report:
+  it called all 18 real/non-degenerate points gate-eligible although only 16
+  SIFT points were eligible; led with post-hoc secondary maxima instead of the
+  pre-specified main family; reversed the Base-cache improvement arrow; and
+  pooled coordinate-dependent L2 gaps across SIFT, GIST, and synthetic data.
+  A fifth editorial issue said summary/gate/representative evidence alone
+  exposed the final verdict even though `final_decision.json` is also needed.
+- The original run and its five generated analysis artifacts were not deleted
+  or relabelled as failures. They were moved intact to the ignored audit path
+  `results/native_recheck_runs/superseded/validation-pre-report-audit-20260905T174058Z/`.
+  The copied summary, gate, representative, final decision, and report retain
+  SHA-256 values `46bec044...`, `2e14434e...`, `0c7f7af1...`, `40512a3e...`,
+  and `5a969e93...`. The raw/completion identities above remain verifiable.
+- The report generator now separates the 16 SIFT gate candidates from two GIST
+  anchors, leads with `sift-initial`, labels secondary maxima as post-hoc
+  descriptive values while retaining them in the pre-registered gate candidate
+  set, reports RQ3 within that one condition, orients Base
+  rebuild-to-cache improvement correctly using the paired geometric mean, and
+  states explicitly that the negative verdict is a validation stopping-rule
+  result rather than a fresh-final estimate. Regression expectations were
+  updated with those distinctions. A follow-up read-only check caught one
+  overcorrection: secondary axes are part of the pre-registered gate candidate
+  set even though their observed maximum must not replace the main-family
+  confirmatory summary. The generator and test now state both facts instead of
+  claiming those candidates were excluded from selection.
+- The first targeted report-test invocation after this edit reported `1 failed,
+  11 passed`: the new assertion expected a scalar skipped-group display while
+  the generator intentionally renders an operating-point range. No experiment
+  or scientific raw was produced. After correcting only that expected string
+  (and the fixture's 600/20=30-query break-even expectation), the same command
+  reported `12 passed in 0.68s`. `compileall`, `git diff --check`, and the full
+  lightweight `make test` then passed. After the follow-up wording correction,
+  the targeted test again reported `12 passed in 0.68s` and the final
+  lightweight rerun reported 244 passed, 2 deselected, 19 warnings in 14.00s.
+- Because every executable script and every test file is deliberately hashed,
+  the reporting corrections changed the implementation-tree/test-tree hashes
+  to `d6a9b505d0a3fe75a93ee1810ec69d69c7ea2e8607ecb7181d84b23388593003`
+  and `d1e7e181d1684afa60ff156283fcd80f7949c3c01f7b07557b1a29ca07e8ab59`.
+  Reusing the first validation as current evidence would therefore fail closed.
+  The native binary itself remains byte-identical at
+  `eef245f3d812b3e90466ceee8ea0107ee72de72ed81fd706304e390042cd100a`.
+
+Exact commands for this phase:
+
+```bash
+make native-validate
+make native-evaluate
+make native-report
+sha256sum <validation/raw/completion/analysis/final/report artifacts>
+mkdir -p results/native_recheck_runs/superseded/\
+  validation-pre-report-audit-20260905T174058Z/analysis
+cp <five generated analysis artifacts> <superseded analysis directory>
+mv results/native_recheck_runs/validation/\
+  native-recheck-validation-20260905T165354658861Z-227a918c57 \
+  results/native_recheck_runs/superseded/\
+  validation-pre-report-audit-20260905T174058Z/
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  .venv/bin/python -m pytest -q tests/test_native_final_report.py
+.venv/bin/python -m compileall -q src scripts tests
+git diff --check
+make test
+```
+
+Outcome: the first validation remains valid for its frozen source but is
+superseded for final publication after the reporting-source correction. The
+next resumable step is to commit this correction phase, rerun `make setup` and
+`make native-test` for the new identities, and then start a completely new
+`make native-validate`. The new run must not reuse or pool first-run timing.
 
 ## Scope and source status
 
