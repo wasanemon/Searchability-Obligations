@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-06 02:50 (Asia/Tokyo)
+Last updated: 2026-09-06 04:08 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -428,6 +428,229 @@ Outcome: the post-audit source/test/native correctness prerequisite passed.
 The next resumable command is `make native-validate`. No executable, test,
 config, policy, holdout, or correctness-evidence file may change during that
 run.
+
+## Issue #3 post-audit formal validation and stopping decision
+
+- `make native-validate` started from a clean Git state at commit `2a0aff1`
+  and created only the new run
+  `native-recheck-validation-20260905T175114361812Z-227a918c57`. It started at
+  `2026-09-05T17:51:14.400963Z`, completed at
+  `2026-09-05T18:25:28.938645Z`, and did not reuse or pool any superseded
+  timing. The formal runner completed 84/84 blocks, 84 raw shards, 42,064 rows,
+  13 experiments, and 2,056 unique queries in about 34 minutes 15 seconds.
+  Raw JSONL is uncompressed and totals 288,072,929 bytes.
+- The run binds implementation hash
+  `d6a9b505d0a3fe75a93ee1810ec69d69c7ea2e8607ecb7181d84b23388593003`,
+  config hash
+  `227a918c5741f10ac138ce45217ac583dc118f044679ab44e64587c3b8da8925`,
+  correctness SHA-256
+  `5bddea79c03b763a8bf498b367e3a81b8b7a001b331d4601dd5a1c99c64601c4`,
+  test-tree hash
+  `d1e7e181d1684afa60ff156283fcd80f7949c3c01f7b07557b1a29ca07e8ab59`,
+  and native binary
+  `eef245f3d812b3e90466ceee8ea0107ee72de72ed81fd706304e390042cd100a`.
+  The process segment recorded an empty Git porcelain status and all requested
+  thread limits equal to one.
+- Evidence identities are: run manifest
+  `d05f6a8ab17c729a5bf25c3f68414c871d333534450b43d2549ffa073854ef65`,
+  checkpoint
+  `bcae6c35e619899aaf7f1ff1149fea820f5552b9cb4da43c9d7e4bae3513928a`,
+  completion
+  `da0daff64d90878b5ef24d48dde6c1d0e6adfbf7b87c62946c5aea135a19b35d`,
+  raw inventory
+  `10cf04e63b8a699253d84462463b6e213a69cbd590505625732dca1ab0c563de`,
+  effective-config file
+  `f52e35f8640d1814f94d84bc47c7da2f75cbddcf7d6ad22959f79a7f05eed4e6`,
+  and build manifest
+  `371090ce6baf3b2242e65048b3f736954d71baae4699cef0676e77167bb9e238`.
+  Completion binds 54 ancillary artifacts as well as the frozen validation
+  config, final policy, and holdout registration.
+- There are 27,672 actual `pybind11_cpp17` F/N/P/ablation rows. Every one
+  records exactly two native calls, all 27,672 stored call indices are unique,
+  and the process manifest ends at 58,737 native calls including untimed
+  setup/audit work. The formal F/N/P integrity aggregate checked 25,872 rows
+  with zero backend, fallback, contract, same-C, or beta-chain failure.
+  Thirteen LB audit files cover 325 query/group sets and 35,125 decisions:
+  25,248 scans and 9,877 strict skips, with lower-bound soundness and strict
+  predicate failure counts both zero.
+- The deterministic summary, gate, and 96-row representative sample have
+  SHA-256 values
+  `4511edaaa2f056623cbda7c13f4ceea1ecde6a8908467c6383ba3c9eaff20415`,
+  `8c109ac4a844d60493d337e2bcdb6616fd0ba416d447eb4d9ad87d89c766ce45`,
+  and `6c01fd2b9a5fed9424e4d96ebaaad81b16a7a0543bfab2a56e3b19c0b2f15c81`.
+  A separate analyzer invocation wrote them under
+  `/tmp/native-final-analysis-audit-eGUfJg`; all three were byte-for-byte equal
+  to the tracked candidates.
+- Validation gate status is `NOT_PASSED`, selected candidate is `null`, and the
+  single reason is `no_non_degenerate_candidate_beats_both_F_and_A`. Among 16
+  gate-eligible SIFT candidates, F/P passed the paired-CI rule in 16/16 while
+  A/P passed in 0/16. Both GIST anchor candidates passed neither comparison.
+  Same-C quality mismatches were zero; empirical A agreement is still not
+  described as the same mathematical guarantee.
+- For the pre-specified `sift-initial` family, F/P API-wall geomeans ranged
+  1.097--1.131 and all four CI lower bounds exceeded one; A/P ranged
+  0.584--0.602 and all four CI upper bounds were below one. At beta=0, P
+  API-wall p50/p95/p99 was 8.542/9.355/9.782 ms, F/P was 1.096682
+  `[1.085929, 1.108052]`, A/P was 0.583748
+  `[0.577843, 0.589578]`, N/P was 1.108, median skipped groups were 20/128,
+  and median Delta vectors scanned were 7,892.5/10,000. Observed beta loss was
+  zero in every measured positive-beta condition; the report does not call it
+  quality-for-speed tradeoff.
+- The secondary-sweep maxima are retained as descriptive values, not promoted
+  over the main family: F/P 1.163725 `[1.149816, 1.177442]` at SIFT `k=1`,
+  beta factor .05; A/P 0.838747 `[0.836900, 0.840617]` at SIFT Delta=1,000,
+  beta factor .05. Those conditions remain in the pre-registered gate set.
+- Main-family RQ3 diagnostics are N/P 1.108--1.143, operating-point median
+  skips 20--30/128, scan exact-min-minus-LB median/p95 325.541/381.721 L2,
+  skip gap 304.316/360.617 L2, group build 2,752.491 ms, and finite F-side
+  break-even 2,603.7--3,528.9 queries for all four points. Cross-dataset L2
+  gaps are no longer pooled. Measured ablations are: rescan-to-heap 1.514x,
+  all-exact-to-adaptive F 2.729x, Base rebuild-to-cache 13.860x, old-to-native
+  P 13.332x (nonpaired development comparison), and A-reference-to-A 0.643x
+  with the reference's non-certified ordering kept explicit.
+- `make native-evaluate` consumed the negative gate and wrote only
+  `final_decision.json`, SHA-256
+  `b0cf8944a2d3c9f2dd4650d6424f426a5f4e1cab1163eb99818f56693a679180`.
+  It records `NOT_SUPPORTED_IN_TESTED_REGIME`, `NO_GO`, and
+  `final_status=NOT_RUN_GATE_NOT_PASSED`. It created no final lock/config,
+  final summary/gate, pre-HNSW authorization, fresh-holdout load, large-final
+  timing, or final-HNSW directory. `run_native_final` and the final analyzer
+  both printed the expected not-started messages rather than fabricating a
+  final result.
+- `make native-report` reverified current implementation, correctness, raw,
+  ancillary, completion, policy, and holdout identities and generated
+  `reports/NATIVE_KERNEL_RECHECK_ja.md` (274 lines, 30,114 bytes), SHA-256
+  `95488e87f14f51cac94e2f7c0451d3491937b49e8b7a3fbb5d774fffb32466a7`.
+  It leads with the validation stopping-rule nature of the verdict and reports
+  RQ1/RQ2/RQ3, all operating points, quality, geometry, build/memory,
+  break-even, ablations, evidence identity, and third-party limitations.
+- No optional post-validation performance-tuning round was run (0 of the
+  permitted maximum two). The compiled/search implementation, centers, group
+  counts/membership, beta policy, Base HNSW parameters, validation queries, and
+  fresh holdout were not changed after timing. The only pre-rerun change was
+  the already documented report interpretation correction, which forced a new
+  full source identity and validation rather than reusing old measurements.
+
+Exact commands:
+
+```bash
+make native-validate
+run_dir=results/native_recheck_runs/validation/\
+native-recheck-validation-20260905T175114361812Z-227a918c57
+sha256sum "$run_dir/run_manifest.json" "$run_dir/checkpoint.json" \
+  "$run_dir/COMPLETED.json" \
+  results/native_recheck_evidence/validation_summary.json \
+  results/native_recheck_evidence/validation_gate.json \
+  results/native_recheck_evidence/validation_representative_raw.json
+make native-evaluate
+make native-report
+for path in results/native_recheck_evidence/final_lock.json \
+  results/native_recheck_evidence/final_config.locked.json \
+  results/native_recheck_evidence/final_summary.json \
+  results/native_recheck_evidence/final_gate.json \
+  results/native_recheck_evidence/pre_hnsw_authorization.json \
+  results/native_recheck_runs/final_hnsw; do
+  test ! -e "$path"
+done
+audit_dir=$(mktemp -d /tmp/native-final-analysis-audit-XXXXXX)
+.venv/bin/python scripts/analyze_native_recheck.py \
+  --input results/native_recheck_runs/validation \
+  --output "$audit_dir/validation_summary.json" \
+  --gate-output "$audit_dir/validation_gate.json" \
+  --bootstrap-resamples 5000 --bootstrap-seed 6202052 \
+  --representative-raw-output "$audit_dir/validation_representative_raw.json"
+cmp "$audit_dir/validation_summary.json" \
+  results/native_recheck_evidence/validation_summary.json
+cmp "$audit_dir/validation_gate.json" \
+  results/native_recheck_evidence/validation_gate.json
+cmp "$audit_dir/validation_representative_raw.json" \
+  results/native_recheck_evidence/validation_representative_raw.json
+```
+
+Outcome: the full post-audit validation and its negative stopping decision are
+complete for implementation identity
+`d6a9b505d0a3fe75a93ee1810ec69d69c7ea2e8607ecb7181d84b23388593003`.
+The independent publication audit below supersedes the previously stated next
+step.
+
+## Issue #3 exhaustive evidence and publication audit
+
+- A second independent, read-only integrity audit reconstructed the current
+  formal validation directly from raw. It verified 84/84 shards, 42,064 rows,
+  288,072,929 raw bytes, 54 ancillary artifacts, and every recorded path,
+  row-count, byte-count, and SHA-256. Native call accounting reconciled exactly
+  as 55,344 timed + 1,928 beta-calibration + 1,140 warmup + 325 LB-audit calls
+  = 58,737. All 27,672 recorded native call indices and all 1,928 calibration
+  indices were unique and disjoint.
+- The same audit independently recomputed all 35,125 LB decisions for 325
+  audit queries (25,248 scan, 9,877 skip) from the stored rational bounds. The
+  strict `LB_lower > tau_upper - beta` action, lower-bound soundness, and sqrt
+  bracketing all matched. It also rechecked every same-C binding, beta=0 order,
+  positive-beta chain, native backend/binary, fallback flag, and A quality
+  result with zero failure. All 168 comparisons and 2,688 point/CI/digest
+  fields were reconstructed from raw; the official summary, gate, and
+  representative export regenerated byte-for-byte. Thus the numerical gate
+  and negative verdict have no P0/P1 integrity defect.
+- A separate scientific-publication audit found that the conclusion remains
+  correct, but the generated report did not numerically expose several items
+  explicitly required by Issue #3: the Delta-influence subset and its
+  uncertainty; micro/composed/API-wall results side by side; the single-session
+  limitation and denominators; warm/cold packed-view construction and memory;
+  the positive-beta pruning/latency contribution; and the exact 25-query-per-
+  condition geometry-audit population. Merely hand-editing the Markdown would
+  violate the clean raw-to-report regeneration requirement, so the generator
+  and its tests must be corrected.
+- The audit also required clearer scope for the group-only break-even numerator,
+  explicit fallback and optional-tuning counts, and removal of the malformed
+  headerless duplicate of the main result rows. It confirmed that the report
+  contains only one CPU/immutable-snapshot limitation bullet; an apparent
+  duplicate came from overlapping inspection ranges and is not a defect.
+- Because `scripts/report_native_recheck.py` is deliberately included in the
+  implementation-tree identity, a generator correction invalidates the
+  current run as publication evidence even though its measured kernel rows are
+  internally valid. To avoid selecting or mixing results, the entire run and
+  all current analysis outputs were preserved under
+  `results/native_recheck_runs/superseded/validation-pre-complete-report-audit-20260905T175114Z/`.
+  The formal run directory was moved intact; copies of summary, gate,
+  representative raw, final decision, correctness JSON/JUnit, and report are
+  under `analysis/`, and the former top-level generated outputs are under
+  `top-level-stale/`. Nothing was deleted or relabelled as a failed experiment.
+
+Exact audit/archive commands:
+
+```bash
+# Independent auditors recomputed raw/checksum/call/LB/comparison/gate state
+# using read-only Python against the one completed validation input.
+mkdir -p results/native_recheck_runs/superseded/\
+  validation-pre-complete-report-audit-20260905T175114Z/analysis
+cp -a results/native_recheck_evidence/{validation_summary.json,\
+validation_gate.json,validation_representative_raw.json,final_decision.json,\
+native_correctness.json,native_correctness_junit.xml} \
+  results/native_recheck_runs/superseded/\
+  validation-pre-complete-report-audit-20260905T175114Z/analysis/
+cp -a reports/NATIVE_KERNEL_RECHECK_ja.md \
+  results/native_recheck_runs/superseded/\
+  validation-pre-complete-report-audit-20260905T175114Z/analysis/
+mv results/native_recheck_runs/validation/\
+native-recheck-validation-20260905T175114361812Z-227a918c57 \
+  results/native_recheck_runs/superseded/\
+  validation-pre-complete-report-audit-20260905T175114Z/
+mkdir -p results/native_recheck_runs/superseded/\
+  validation-pre-complete-report-audit-20260905T175114Z/top-level-stale
+mv reports/NATIVE_KERNEL_RECHECK_ja.md \
+  results/native_recheck_evidence/{validation_summary.json,validation_gate.json,\
+validation_representative_raw.json,final_decision.json} \
+  results/native_recheck_runs/superseded/\
+  validation-pre-complete-report-audit-20260905T175114Z/top-level-stale/
+```
+
+Outcome: the audited second validation remains immutable and recoverable but is
+superseded solely because its hashed report generator is incomplete. The next
+resumable phase is to complete all report fixes and focused/full tests, record
+new implementation/test identities in a phase commit, then run `make setup`,
+`make native-test`, and a new non-pooled `make native-validate`. No performance
+tuning, configuration change, holdout access, or result-dependent method
+selection is authorized.
 
 ## Scope and source status
 

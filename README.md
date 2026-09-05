@@ -74,6 +74,37 @@ report such a reduced run as the configured final sweep.
 Full commands, observed failures, and the current exact resume point are in
 [`RESEARCH_STATE.md`](RESEARCH_STATE.md).
 
+## Issue #3 native kernel recheck
+
+[Issue #3](https://github.com/wasanemon/Searchability-Obligations/issues/3)
+adds a packed pybind11/C++17 F/N/P kernel, an independently optimized Faiss A
+path, required ablations, a validation gate, and a separate Japanese report.
+The reproducible command chain is:
+
+```bash
+make setup
+make native-test
+make native-smoke
+make native-validate
+make native-evaluate
+make native-report
+```
+
+`native-test` executes the native fixed-seed 10,000-case gate. `native-smoke`
+is offline calibration. `native-validate` is the heavy one-thread timing run;
+`native-evaluate` may authorize a fresh final only if a non-degenerate real-data
+candidate beats both the certified F and practical A baselines under the
+pre-registered paired-CI rule. If that gate does not pass, it deliberately
+creates no final lock and reads no fresh holdout.
+
+The completed study reached `NOT_SUPPORTED_IN_TESTED_REGIME` / `NO_GO`: P beat
+F in the eligible SIFT validation cells but beat A in none, so the fresh final
+was not authorized. See
+[`reports/NATIVE_KERNEL_RECHECK_ja.md`](reports/NATIVE_KERNEL_RECHECK_ja.md)
+and [`results/native_recheck_evidence/README.md`](results/native_recheck_evidence/README.md).
+Saved raw can be rechecked by `make native-report` without rerunning the timed
+experiment; `make native-validate` starts a new experimental identity.
+
 ## Core contract
 
 For a query, snapshot, immutable base generation, and a base ANN candidate set
