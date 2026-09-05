@@ -22,10 +22,18 @@ make smoke
 make report
 ```
 
-The smoke run is offline and emits full-Delta, pruning with beta=0, pruning
-with beta>0, and no-pruning measurements plus machine-checked guarantee fields.
-Small tracked evidence is written below `results/smoke`; resumable evaluation
-runs are placed below the gitignored `results/runs` directory.
+`make test` is the CI-sized suite. The fixed-seed 10,000-case evaluation test is
+deliberately separate and must be run before a final research claim:
+
+```bash
+make test-full
+```
+
+The smoke run needs no network. It emits the optimized full-Delta reference,
+pruning with beta=0 and beta>0, the required practical baselines, and the
+no-pruning ablation. It also saves machine-checkable guarantee fields and raw
+query-method rows. A completed smoke is a pipeline/correctness check, not
+evidence that the method is useful on real data.
 
 Real-data acquisition and bounded evaluation are separate:
 
@@ -37,8 +45,25 @@ make evaluate
 Dataset URLs, checksums, extraction IDs, licenses/terms links, failures, and
 resume commands are recorded rather than silently substituting data. All
 benchmarks force Faiss and common BLAS implementations to one thread by
-default. Full commands and current completion state are in
-`RESEARCH_STATE.md`.
+default. SIFT and especially GIST require several GiB of disk and the configured
+evaluation can run for a long time on one CPU thread.
+
+`make evaluate` is resumable. It selects an incomplete run with the same
+effective config hash, checkpoints every query block atomically, and verifies a
+completed shard before skipping it. The command prints an exact resume command;
+retain its `--run-id`. For a resource-bounded diagnostic (not a substitute for
+the full acceptance run), use the same runner options, for example:
+
+```bash
+.venv/bin/python scripts/run_experiment.py \
+  --config configs/evaluate.json \
+  --max-experiments 1 --max-test-queries 25 --max-repetitions 1
+```
+
+Limits become part of the effective config and therefore produce a different
+config hash. Never report such a reduced run as the full configured sweep.
+Full commands, observed failures, and the current exact resume point are in
+[`RESEARCH_STATE.md`](RESEARCH_STATE.md).
 
 ## Core contract
 
@@ -62,7 +87,65 @@ scope, fallback, numerical mode, and measured component costs.
 - `tests/`: unit/property, counterexample, randomized, snapshot, and crash tests
 - `configs/`: immutable JSON experiment inputs
 - `scripts/`: environment capture, data acquisition, experiment, aggregation, plotting
+- `data/manifests/`: source URLs, terms notes, archive and extracted-file checksums
 - `results/`: small raw evidence, manifests, summaries, and failure logs
-- `reports/REPORT_ja.md`: Japanese research result and decision
+- `reports/REPORT_ja.generated.md`: regenerable raw-data aggregate; it makes no research decision
+- `reports/REPORT_ja.md`: manually reviewed Japanese synthesis and decision
 - `RESEARCH_STATE.md`: authoritative progress and exact resume instructions
 
+## Artifact and integrity model
+
+Every benchmark run has an immutable identity consisting of its run ID, config
+hash, dataset hash, and split ID. Its directory contains:
+
+```text
+effective_config.json        exact configuration actually executed
+run_manifest.json            environment, identities, status, failures, peak RSS
+build_manifest.json          index/group construction and memory observations
+splits/*.json                Base/Delta/validation/test identity and provenance
+validation/*.json            choices made without looking at final test queries
+raw/*.jsonl                  one row per query, method, and repetition
+checkpoint.json              raw-shard path, row count, and SHA-256
+COMPLETED.json               present only after every shard was reverified
+```
+
+Small offline evidence is written below `results/smoke`. Real-data raw runs are
+written below the gitignored `results/runs` because they can be large. Do not
+copy a number out of an incomplete run merely because some shards exist.
+Failures and pre-audit runs are retained and explicitly excluded when
+appropriate; they are not rewritten as passes.
+
+`make report` searches the saved runs under `results`, verifies each checkpoint
+entry's row count and SHA-256, then regenerates machine-readable summaries,
+figures, and `reports/REPORT_ja.generated.md`. It does not rerun search and does
+not choose the final hypothesis outcome. The human-reviewed decision lives in
+`reports/REPORT_ja.md`, which includes slots for paired confidence intervals,
+break-even, maintenance cost, negative conditions, limitations, and the exact
+run identities used.
+
+## Full reproduction order
+
+From a fresh checkout on the documented CPython/Linux platform:
+
+```bash
+make setup
+make test
+make test-full
+make smoke
+make data
+make evaluate
+make report
+```
+
+The scientific dependency order matters: do not use performance results after
+a correctness violation, do not tune centers/groups/beta on final test queries,
+and do not mix ordinary L2 with Faiss squared-L2. Correctness comparisons reuse
+one frozen Base candidate set `C`, and certified pruning uses the strict rule
+`LB > tau - beta`.
+
+For a clean-environment verification that does not destroy an existing virtual
+environment, use a fresh checkout/worktree and run `make setup` there. Record
+the commit, dirty state, exact commands, output, failures, and artifact hashes
+in `RESEARCH_STATE.md`. Downloaded corpora, generated indexes, virtual
+environments, and large run directories remain outside Git; their manifests and
+regeneration instructions are the durable record.
