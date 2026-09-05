@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-06 04:10 (Asia/Tokyo)
+Last updated: 2026-09-06 04:50 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -783,6 +783,127 @@ Outcome: source-frozen correctness passed with actual native execution. The
 next resumable command is `make native-validate`; the validation namespace is
 empty and superseded runs remain outside it. No executable, test, config,
 policy, holdout, or correctness file may change during the formal run.
+
+## Issue #3 final formal validation and terminal decision
+
+- The correctness evidence phase was committed as `2000b6b` before timing.
+  The working tree and the designated validation namespace were empty at run
+  start. Formal `make native-validate` ran from
+  `2026-09-05T19:10:58.068740+00:00` through
+  `2026-09-05T19:45:08.442398+00:00` with all five configured thread variables
+  and Faiss fixed to one. Run
+  `native-recheck-validation-20260905T191058023915Z-227a918c57` completed
+  84/84 blocks, recorded 58,737 native calls and no run failures, and produced
+  84 uncompressed raw JSONL shards containing 42,064 rows and 288,076,713
+  bytes. The run binds config hash
+  `227a918c5741f10ac138ce45217ac583dc118f044679ab44e64587c3b8da8925`,
+  implementation-tree hash
+  `bb9c65d7060ed8d8dfca3ff157b32aa318181f0a0b793eb816d12987fdd82c4f`,
+  native shared-object hash
+  `eef245f3d812b3e90466ceee8ea0107ee72de72ed81fd706304e390042cd100a`,
+  and Git commit `2000b6bcb9d4359abd193338d975a5fa703f5f77`.
+- The analyzer accepted exactly this one completed validation run, 13
+  experiments, 168 comparisons, one process session, and 2,056 unique queries.
+  Row-level correctness and native-backend checks each passed over 25,872 rows
+  with zero failures. The canonical raw inventory SHA-256 is
+  `d31218eb63a96136c1e553430f5d10f5ec8b8f7b5aa8a07e3e45762ed2049240`;
+  `COMPLETED.json` SHA-256 is
+  `10665158cdad322c0cf37926d6e21f8225e61ca705972ddfda97c4491bce5366`.
+- The preregistered validation gate is `NOT_PASSED`, with durable reason
+  `no_non_degenerate_candidate_beats_both_F_and_A`. For the designated main
+  `sift-initial` family, F/P API-wall geometric means ranged 1.097--1.131 and
+  all four paired-bootstrap lower bounds exceeded 1, while A/P ranged
+  0.579--0.597 and all four confidence intervals remained below 1. Across all
+  16 gate-eligible SIFT candidates, F/P passed 16/16 and A/P passed 0/16; the
+  two non-independent GIST anchor candidates passed neither comparison. Same-C
+  quality mismatches were zero. Thus native pruning improved on certified F in
+  the tested SIFT grid but did not beat optimized A, so no candidate satisfied
+  both required comparators.
+- `make native-evaluate` emitted the terminal stopping decision
+  `NOT_SUPPORTED_IN_TESTED_REGIME` and engineering decision `NO_GO`, with
+  `final_status=NOT_RUN_GATE_NOT_PASSED`, `selected_candidate=null`, and all
+  of `lock_created`, `large_final_started`, and `fresh_sift_holdout_loaded`
+  false. As required by the fail-closed policy, no final lock/config,
+  final summary/gate, pre-HNSW authorization, or HNSW directory exists. The
+  untouched SIFT `[1200,2200)` fresh holdout was not loaded.
+- `make native-report` generated
+  `reports/NATIVE_KERNEL_RECHECK_ja.md`. It reports RQ1--RQ3; main, sweep,
+  Delta-influence, and three-scope timing; component ablations; the 325-set /
+  35,125-decision geometry audit; build/memory and group-only versus
+  group-plus-packed break-even; beta-chain/fallback evidence; and limitations.
+  It explicitly states that the one-session bootstrap CI does not estimate
+  process/session variation and that the negative stopping result is not a
+  fresh-final estimate.
+- A second analyzer invocation wrote summary/gate/representative outputs to
+  `/tmp/issue3-analyze.G8ZyMC` from the saved raw with the same 5,000-resample,
+  seed-6202052 settings. All three files were byte-identical to the publication
+  outputs. A first diagnostic hash command incorrectly requested lowercase
+  `completion.json` and reported that it did not exist; the actual protocol
+  marker is uppercase `COMPLETED.json`, which was then located, parsed, and
+  hashed. No result or tracked evidence was changed by the diagnostic typo.
+- A separate read-only integrity audit reported no findings at any priority. It
+  independently checked every path, row count, byte count, SHA-256, block
+  boundary, method/repetition coverage, and frozen-C identity in all 84 raw
+  shards; all 54 ancillary files (30,000,445 bytes); and the completion,
+  manifest, checkpoint, and build receipts. It reconciled 58,737 calls as
+  55,344 timed + 1,928 calibration + 1,140 warmup + 325 LB calls. Across
+  27,672 compiled-native rows it found no backend, fallback, contract, same-C,
+  API, or Receipt violation. All 20,304 beta-zero rows matched exact ordering;
+  all 7,368 positive-beta rows satisfied
+  `0 <= observed_lower <= observed_upper <= certified <= requested`.
+  Recalculation of 35,125 LB decisions found 25,248 scans, 9,877 strict skips,
+  zero equality/predicate/action mismatch, and 35,125/35,125 sound bounds.
+  Independent regeneration of all 28 operating points, 168 comparisons, and
+  96 representative rows matched the publication artifacts exactly.
+- A separate final scientific audit reported no P0/P1 findings. It cross-read
+  Issue #3, raw/summary/gate/decision/report and confirmed the ordinary-L2
+  versus Faiss-squared-L2 distinction, strict
+  `LB_lower > tau_upper - beta` rule, same frozen C, preregistration and
+  untouched holdout, RQ1--RQ3 negative-result interpretation, one-session CI
+  limitation, build/memory/break-even scope, and hash provenance. It also
+  regenerated the report to `/tmp` and obtained the identical
+  `9807d1da...` SHA-256. A final lightweight `make test` then reported
+  `254 passed, 2 deselected, 19 warnings in 14.03s`; no executable or test file
+  had changed since the source-frozen native gate.
+
+Current publication SHA-256 values:
+
+```text
+dd2cd9b1e50b4202e2d39e39acc36b48a317fdc8908acff6630bc3a56c0e22d5  results/native_recheck_evidence/native_correctness.json
+e066c863c950b62824b32fab8c80d3783cc86015d196abf8951023b2c06c4dba  results/native_recheck_evidence/native_correctness_junit.xml
+1735992cd55f13bbe5281e354bba8af8bccaf10f073e04f7941e6569e788f41c  results/native_recheck_evidence/validation_summary.json
+17e04e5bfbd592dcfee4b43604fdd6bb7860aafa6e29501dfaf2c191a02f5b92  results/native_recheck_evidence/validation_gate.json
+bd831a851d52564cad074073076c3adcd4c72da2412a9cc568558989a5a993a7  results/native_recheck_evidence/validation_representative_raw.json
+7abd3aee91670bfaf0dffcf344597536812072b78151828aa28678af04c91029  results/native_recheck_evidence/final_decision.json
+9807d1da5629855edb772db33f24d8785434225b1ca8ab38ca7729072827b235  reports/NATIVE_KERNEL_RECHECK_ja.md
+```
+
+Exact phase commands:
+
+```bash
+make native-validate
+make native-evaluate
+make native-report
+.venv/bin/python -m pytest -m "not evaluation"
+.venv/bin/python scripts/analyze_native_recheck.py \
+  --input results/native_recheck_runs/validation \
+  --output /tmp/issue3-analyze.G8ZyMC/summary.json \
+  --gate-output /tmp/issue3-analyze.G8ZyMC/gate.json \
+  --bootstrap-resamples 5000 --bootstrap-seed 6202052 \
+  --representative-raw-output /tmp/issue3-analyze.G8ZyMC/representative.json
+cmp results/native_recheck_evidence/validation_summary.json \
+  /tmp/issue3-analyze.G8ZyMC/summary.json
+cmp results/native_recheck_evidence/validation_gate.json \
+  /tmp/issue3-analyze.G8ZyMC/gate.json
+cmp results/native_recheck_evidence/validation_representative_raw.json \
+  /tmp/issue3-analyze.G8ZyMC/representative.json
+```
+
+Outcome: the formal validation and preregistered negative stopping decision are
+complete. The next resumable phase is to commit these immutable small evidence
+files and report, then reproduce setup, native correctness, offline smoke, and
+report generation from a clean/new environment without overwriting the formal
+correctness or validation evidence.
 
 ## Scope and source status
 
