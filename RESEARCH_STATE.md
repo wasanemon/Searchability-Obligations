@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-05 23:49 (Asia/Tokyo)
+Last updated: 2026-09-05 23:58 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -35,6 +35,60 @@ Outcome: start-state and branching gate passed. No experiment has yet been run
 for Issue #3. The next resumable phase is a development-query profile of the
 old Python pruning path, followed by the compiled F/N/P kernel design and
 correctness-first tests.
+
+## Issue #3 old-path development profile
+
+- Before changing the search implementation, the old Python path was profiled
+  on SIFT Base 100,000 / Delta 10,000, dimension 128, `k=10`, `C=64`, 128
+  groups, 100 raw-pending records, five validation queries and five development
+  queries. Both runs used one CPU thread and the new ignored namespace
+  `results/native_recheck_runs/development/`; they are calibration only.
+- cProfile run
+  `native-recheck-old-python-profile-20260905T145406.329456Z-10eec0e992`
+  completed 1/1 block. It recorded 16,289,513 calls in 69.931 s. Across all
+  harness calls, `search_pruned` was called 24 times for 3.037 cumulative s,
+  `distance_intervals` 6,074 times for 1.393 s, `stable_topk` 63 times for
+  1.793 s, exact `Fraction` squared L2 630 times for 1.769 s, `np.stack` 232
+  times for 0.524 s, and kth partition 3,198 times. The `.prof` SHA-256 is
+  `9a5574fd8dfa48f7933598938eec58a30dd4d46e2db8b46cae0dbcbe90874043`.
+- The unprofiled matched run
+  `native-recheck-old-python-profile-20260905T145629.346102Z-10eec0e992`
+  also completed 1/1 block. Descriptive five-query medians were 23.566 ms E2E
+  for optimized Delta Flat versus 84.839 ms for old beta=0 pruning; pruning
+  read 7,714.6 Delta vectors and skipped 23.2/128 groups on average. Its
+  beta=0 component medians were LB 10.470 ms, group scan 12.045 ms, merge
+  19.460 ms, ordering 1.101 ms, visibility 1.399 ms, and Receipt 0.798 ms.
+- The tracked, immutable small summary is
+  `results/native_recheck_evidence/development_profile_old.json`; it binds the
+  config/implementation/run/raw/completion/profile hashes. cProfile-inflated
+  timings are not used as benchmark estimates.
+- The observations justify the required packed vectors/keys/offsets, one native
+  call for batched LB and group scanning, incremental kth-upper maintenance,
+  adaptive exact boundary work, and caching of immutable Base visibility maps.
+  HNSW build time is excluded from this query-path diagnosis.
+
+Exact profile commands:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  .venv/bin/python -m cProfile \
+  -o results/native_recheck_runs/development/old_python.prof \
+  scripts/run_experiment.py --config configs/native_recheck_profile.json
+.venv/bin/python -c "import pstats; ..."
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  .venv/bin/python scripts/run_experiment.py \
+  --config configs/native_recheck_profile.json
+jq -s '<five-query descriptive aggregation>' \
+  results/native_recheck_runs/development/<run-id>/raw/*.jsonl
+sha256sum <profile/completion/raw paths>
+```
+
+Outcome: development profiling phase passed. The next resumable phase is to
+implement and build the compiled F/N/P kernel without changing centers, group
+membership, radii, or Base search parameters, then run native-specific
+correctness tests before any validation timing.
 
 ## Scope and source status
 
