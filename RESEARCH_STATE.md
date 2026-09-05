@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-06 02:45 (Asia/Tokyo)
+Last updated: 2026-09-06 02:50 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -381,6 +381,53 @@ superseded for final publication after the reporting-source correction. The
 next resumable step is to commit this correction phase, rerun `make setup` and
 `make native-test` for the new identities, and then start a completely new
 `make native-validate`. The new run must not reuse or pool first-run timing.
+
+## Issue #3 post-audit source-frozen correctness gate
+
+- The report-audit corrections were committed as `601cb9c` with message
+  `docs: harden native result interpretation (refs #1, #3)`. A final independent
+  read-only diff audit found no remaining P0/P1 issue and verified that
+  secondary axes remain in the pre-registered gate set while the report keeps
+  their maxima separate from the main-family confirmatory summary.
+- Before correctness execution, the stale top-level generated report/analysis
+  files were moved, not deleted, beneath the ignored
+  `results/native_recheck_runs/superseded/validation-pre-report-audit-20260905T174058Z/top-level-stale/`
+  directory. `git status --short --branch` was then clean.
+- `make setup` completed at commit
+  `601cb9c45eeeb5c1bf474eef30ff139d265aaee5`. Its index probes again emitted
+  PyPI DNS retry warnings, but all exact pinned packages were already present;
+  the editable wheel built and installed, the environment/Faiss HNSW smoke
+  passed, and all five thread variables plus Faiss were fixed to one. The
+  rebuilt native shared object was still byte-identical at
+  `eef245f3d812b3e90466ceee8ea0107ee72de72ed81fd706304e390042cd100a`.
+- Formal `make native-test` collected 246 tests and selected 245. It completed
+  `245 passed, 1 deselected, 20 warnings in 67.90s`, including exactly 10,000
+  fixed-seed native cases, required tie/beta/underfill/duplicate tests, and the
+  existing lifecycle regressions. There were zero failures, errors, or skips.
+- The regenerated correctness JSON is `status=passed` and binds implementation
+  hash `d6a9b505d0a3fe75a93ee1810ec69d69c7ea2e8607ecb7181d84b23388593003`,
+  test-tree hash
+  `d1e7e181d1684afa60ff156283fcd80f7949c3c01f7b07557b1a29ca07e8ab59`,
+  and the unchanged native binary above. Its SHA-256 is
+  `5bddea79c03b763a8bf498b367e3a81b8b7a001b331d4601dd5a1c99c64601c4`;
+  the JUnit SHA-256 is
+  `247f0f4cbc691b6cd40e22efb9423eaf0eba7dc8c836a56e24c9c654e0dd5cee`.
+
+Exact commands:
+
+```bash
+make setup
+make native-test
+.venv/bin/python -m json.tool \
+  results/native_recheck_evidence/native_correctness.json
+sha256sum results/native_recheck_evidence/native_correctness.json \
+  results/native_recheck_evidence/native_correctness_junit.xml
+```
+
+Outcome: the post-audit source/test/native correctness prerequisite passed.
+The next resumable command is `make native-validate`. No executable, test,
+config, policy, holdout, or correctness-evidence file may change during that
+run.
 
 ## Scope and source status
 
