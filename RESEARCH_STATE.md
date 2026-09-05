@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-05 15:27 (Asia/Tokyo)
+Last updated: 2026-09-05 15:30 (Asia/Tokyo)
 
 ## Scope and source status
 
@@ -69,6 +69,7 @@ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
   .venv/bin/python -m pytest \
   tests/test_randomized.py::test_fixed_seed_ten_thousand_random_cases -q \
   --junitxml=results/test_evidence/randomized_10000_final.xml
+make smoke
 make data
 git add README.md reports/REPORT_ja.md
 git commit -m "docs: scaffold Issue #1 research report"
@@ -226,6 +227,19 @@ make test
   and used `/tmp`; the Makefile sets `MPLCONFIGDIR` to the writable repository
   cache. A fresh smoke will be retained after audit fixes rather than treating
   this pre-audit run as final evidence.
+- The source-frozen post-audit smoke completed as
+  `offline-smoke-20260905T062705.177285Z-43d3397eca`, with all 8/8 blocks,
+  384 raw rows, zero contract violations, zero optimized-baseline validation
+  failures, and 4/4 independent Fraction-oracle matches. Its implementation
+  tree hash is `d2e55be3b4f19ddff046d4cdedbfeafe07ad12ccdf5a9603726eab612a269095`.
+  The analyzer selected only the calibration-role post-audit run, verified the
+  checkpoint hashes, and emitted 48 method/condition groups.
+- In this deliberately tiny smoke, beta=0 pruning remained slower than Delta
+  Flat in all four distributions. It skipped 56.25% of groups for clustered,
+  75% for outlier-radius, and 0% for isotropic and Delta-near-query data. All
+  five displayed certified/full-scan methods had exact recall 1.0 here. These
+  observations validate negative-condition reporting but do not replace the
+  real-data evaluation.
 
 ## Reporting state
 
@@ -315,11 +329,10 @@ make test
 
 Dataset acquisition, lifecycle hardening, benchmark hardening, and the
 immutable-payload correctness fix are implemented and source-frozen. The final
-full suite and 10,000-case evidence passed as recorded above. Commit the new
-test evidence, then resume with:
+full suite, 10,000-case evidence, and post-audit smoke passed as recorded above.
+Commit the smoke evidence, then resume with:
 
 ```bash
-make smoke
 make evaluate
 make report
 ```
