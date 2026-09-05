@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-05 21:22 (Asia/Tokyo)
+Last updated: 2026-09-05 21:36 (Asia/Tokyo)
 
 ## Scope and source status
 
@@ -243,12 +243,12 @@ make test
 
 ## Reporting state
 
-- `reports/REPORT_ja.md` now exists as a manually reviewed Japanese report
-  scaffold distinct from the generated aggregate. It covers every Issue #1
-  reporting dimension, uses explicit `TBD（未実行）` markers instead of invented
-  numbers, and currently states the only defensible interim decision:
-  `INCONCLUSIVE`. It is not a final report until those markers are replaced or
-  explicitly resolved from completed evidence.
+- `reports/REPORT_ja.md` began as a manually reviewed Japanese scaffold distinct
+  from the generated aggregate. Its interim `TBD（未実行）` values and overall
+  `INCONCLUSIVE` decision were subsequently replaced from completed evidence;
+  its current overall decision is `NOT_SUPPORTED_IN_TESTED_REGIME`. Novelty and
+  FTO alone remain explicitly `INCONCLUSIVE`, because this experiment cannot
+  establish either claim.
 - `README.md` now distinguishes CI vs. the 10,000-case suite, raw/checkpoint vs.
   completion markers, generated vs. human reports, reduced diagnostics vs.
   acceptance runs, and the clean reproduction order.
@@ -381,6 +381,62 @@ make test
   warning and used `/tmp`; this is preserved as a non-result-affecting warning.
   The Makefile supplies the repository-local `MPLCONFIGDIR` and did not emit it.
 
+## Clean-environment acceptance verification
+
+- Analysis/evidence was fixed as phase commit `ebdeb68`; the Japanese decision,
+  current-source smoke, and JUnit were fixed as phase commit `7bfebe9`. The
+  primary worktree was clean at `7bfebe935257da8d6c427e52430f35c156e3c50b`.
+- A new directory was created with
+  `mktemp -d /tmp/searchability-clean-XXXXXX`, yielding
+  `/tmp/searchability-clean-n1Ehz2`, followed by
+  `git worktree add --detach /tmp/searchability-clean-n1Ehz2 7bfebe9`.
+- The first sandboxed `make setup` created `.venv` but could not resolve PyPI;
+  pip exhausted five connection attempts and Make exited 2 at the pinned-pip
+  install. This external DNS failure is preserved. The exact same `make setup`
+  was rerun with network approval and succeeded. `scripts/check_environment.py`
+  recorded commit `7bfebe935257...`, empty Git porcelain status, CPython
+  3.10.12, NumPy 2.2.6, Faiss 1.15.0, successful squared-L2 HNSW smoke, and
+  all five thread environment variables plus Faiss threads equal to 1.
+- Clean `make test` reported `132 passed, 1 deselected, 8 warnings in 8.49s`.
+- Clean `make smoke` completed run
+  `offline-smoke-20260905T122801.383599Z-43d3397eca`, 8/8 blocks, config hash
+  `43d3397eca1f74b736d7e0b94184e900ca879f55d4d2c1f5ab206d8492f5f4bc`,
+  implementation hash
+  `8c4581cf733bf25b3e27c115be1dbdad1285564f03846c0d0e93b822c2c80f31`,
+  checkpoint SHA-256
+  `a3450087326a30b32901db792c594f4cf9bb9fc4ff430823a0b1dd16fb469982`,
+  and peak RSS 57,339,904 bytes. Its `COMPLETED.json` SHA-256 is
+  `6f0205c5801df4bff241b32b8127e96914942c481d7a6f266cd65eb8f63a6b95`.
+  Its raw directory was copied into the primary tracked `results/smoke/` tree
+  before clean-worktree cleanup; it remains separate from the designated smoke
+  rather than being pooled as extra scientific observations.
+- Clean report command was exactly:
+
+  ```bash
+  make report \
+    REPORT_INPUT=/home/wasanemon/project/Searchability-Obligations/results/runs \
+    REPORT_OUTPUT=.cache/final-report-analysis
+  ```
+
+  It revalidated two completed final runs and excluded the one incomplete run,
+  aggregated 112,800 rows with contract/baseline failures 0 and Fraction oracle
+  16/16, and regenerated `results/final_evidence/summary.json` with exactly the
+  committed SHA-256
+  `ac6eb0cf49371588690aec15ea416dd7421e665525bb036f4949081e08d1e72c`.
+  `git diff` showed no change for either immutable evidence file.
+- As an additional clean check, `make test-full` reported
+  `133 passed, 8 warnings in 54.55s`.
+- After copying the clean smoke, it was independently re-read with
+  `scripts/analyze_results.py --input
+  results/smoke/offline-smoke-20260905T122801.383599Z-43d3397eca --output
+  /tmp/searchability-smoke-audit-nohnRP --evidence-role calibration`. Checksum
+  validation accepted one completed run, 384 rows and 48 groups, with contract
+  and optimized-baseline failures 0 and Fraction oracle 4/4. Because that
+  analyzer also refreshes the shared generated report/figures, `make report`
+  was immediately rerun against `results/runs`; it completed with the final
+  2-run/112,800-row totals above and reproduced immutable summary SHA-256
+  `ac6eb0cf49371588690aec15ea416dd7421e665525bb036f4949081e08d1e72c`.
+
 ## External constraints and observed failures
 
 - Sandbox DNS blocked the first GitHub API, `git ls-remote`, and PyPI attempts.
@@ -448,31 +504,25 @@ make test
 - [x] Implement and test SQLite obligations, MVCC snapshots, actual-process
       crash recovery, generation publication/pinning, and conservative GC.
 - [x] Regenerate figures/aggregates and the Japanese report from saved raw data.
-- [ ] Re-run setup -> test -> smoke -> report from a clean environment.
+- [x] Re-run setup -> test -> smoke -> report from a clean environment.
 - [ ] Create phase commits and, if remote tooling permits, an Issue #1 PR.
 
 ## Current resume point
 
 Dataset acquisition, final real-data runs, checksum-verifying analysis,
-tracked evidence export, the current-source smoke, and the Japanese scientific
-decision are complete. The preserved failed attempt remains excluded. The
-exact next resumable phase is to commit the analysis/report evidence, then make
-a detached fresh worktree and execute:
+tracked evidence export, Japanese decision, current-source verification, and
+the detached clean-environment acceptance sequence are complete. The preserved
+failed attempt remains excluded. The exact next resumable phase is:
 
 ```bash
-make setup
-make test
-make smoke
-make report \
-  REPORT_INPUT=/home/wasanemon/project/Searchability-Obligations/results/runs \
-  REPORT_OUTPUT=.cache/final-report-analysis
+git status --short --branch
+git diff --check
 ```
 
-Record the detached commit, exact outputs, smoke run ID, and regenerated
-immutable-evidence hash here. Then mark the clean-verification checkbox in the
-Japanese report, make the final documentation commit, publish `main` and
-`codex/issue-1`, and open (but do not merge) the Issue #1 PR. Do not rerun or
-modify either completed final real-data run.
+Then commit this clean-verification record and copied smoke artifact, publish
+the empty remote's initial commit lineage as `main` plus `codex/issue-1`, and
+open (but do not merge) the Issue #1 PR. Do not rerun or modify either completed
+final real-data run.
 
 Both dataset manifests report no acquisition failures. To re-verify or resume a
 future partial GIST acquisition, run:

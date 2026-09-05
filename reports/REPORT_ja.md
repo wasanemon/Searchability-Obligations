@@ -510,9 +510,20 @@ corpus、index、`.venv` は研究ルールに従い Git へ commit しない。
 検証環境は Ubuntu 22.04.5 LTS、CPython 3.10.12、NumPy 2.2.6、Faiss CPU 1.15.0、Xeon Gold
 5416S、RAM 29 GiB。`OMP/OPENBLAS/MKL/NUMEXPR/VECLIB` thread はすべて 1。GPU は使っていない。
 
-最終化直前に、報告を含む phase commit を fresh worktree へ checkout し、既存 raw を read-only source
-として `make setup -> make test -> make smoke -> make report` を再実行する。その exact commit、結果、
-evidence hash は `RESEARCH_STATE.md` と本節へ追記してから提出する。
+phase commit `7bfebe935257da8d6c427e52430f35c156e3c50b` を detached fresh worktree に checkout し、
+新規 `.venv` で次を実行した。
+
+| clean command | 結果 |
+|---|---|
+| `make setup` | sandbox 内の初回は DNS 制限で失敗し、その失敗を保持。network 許可で同じ command を再実行し成功。環境検査時の Git status は空、Faiss smoke passed、thread=1 |
+| `make test` | 132 passed、1 deselected、8 warnings、8.49 s |
+| `make smoke` | run `offline-smoke-20260905T122801.383599Z-43d3397eca`、8/8 blocks、384 raw rows、completed |
+| `make report REPORT_INPUT=... REPORT_OUTPUT=.cache/final-report-analysis` | final 2 completed / 1 excluded、112,800 rows、violation 0、oracle 16/16。immutable summary SHA-256 は元と同じ `ac6eb0cf...d1e72c` |
+| 追加 `make test-full` | 133 passed、8 warnings、54.55 s |
+
+clean smoke の raw directory は主 worktree の `results/smoke/` に複製して保持した。初回 setup failure は
+scientific test failure ではなく sandbox DNS の外部制約だが、成功へ書き換えず
+[`RESEARCH_STATE.md`](../RESEARCH_STATE.md) に両試行を記録した。
 
 ## 17. 提出チェック
 
@@ -527,4 +538,4 @@ evidence hash は `RESEARCH_STATE.md` と本節へ追記してから提出する
 - [x] build/assignment/memory/Receipt を無料扱いせず、ACID throughput と区別した。
 - [x] test query を center、group 数、beta の tuning に使っていない。
 - [x] 新規性、普遍的有効性、production safety を過大主張していない。
-- [ ] fresh worktree の setup -> test -> smoke -> report を最終 commit で再検証する。
+- [x] fresh worktree の setup -> test -> smoke -> report を固定 phase commit で再検証した。
