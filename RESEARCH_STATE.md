@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-06 01:49 (Asia/Tokyo)
+Last updated: 2026-09-06 01:53 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -191,6 +191,51 @@ phase commit. No validation timing has run. The next resumable commands, in
 order, are `make setup` and `make native-test`; validation must not start unless
 the regenerated correctness evidence is `passed` and matches the frozen source,
 test tree, and loaded native binary.
+
+## Issue #3 source-frozen native correctness gate
+
+- The implementation/pre-registration phase was committed as `a399143` with
+  message `feat: add native recheck pipeline (refs #1, #3)`. The implementation
+  tree remained
+  `3f11bc88369f879a560b5251e883d5d641e48b874843ba2fb3630028ec8c75c0`.
+- `make setup` completed successfully at that commit. Its PyPI probes emitted
+  sandbox DNS retry warnings, but every pinned package was already installed;
+  the editable native wheel built and installed, environment/Faiss HNSW smoke
+  passed, all five thread variables and Faiss were 1, and the rebuilt native
+  shared object reproduced SHA-256
+  `eef245f3d812b3e90466ceee8ea0107ee72de72ed81fd706304e390042cd100a`.
+  Thus the warnings are preserved but are not relabelled as a setup failure.
+- The formal `make native-test` then collected 246 tests and selected 245 under
+  the declared `not evaluation or native_fixed_seed` expression. It completed
+  `245 passed, 1 deselected, 20 warnings in 67.26s`. The native fixed-seed case
+  property is exactly 10,000; the other full evaluation test was the sole
+  deselection. There were zero failures, errors, or skips. Warnings comprise
+  the optional-PyYAML messages plus pytest's xunit2 `record_property` notice;
+  they remain visible.
+- `results/native_recheck_evidence/native_correctness.json` has
+  `status=passed`, binds commit `a3991432d06d54aaf3a45d1d21ac49b954a70a74`,
+  the implementation hash above, test-tree hash
+  `ce49f6ad04225beb5727380a228f115e0ee72bf0bf57d3e88b186026b965c839`,
+  and the loaded native binary. Its SHA-256 is
+  `1c380b14e29cd13ab31fe7ccd0f533364ab77a20d4c1a78a70932f3790c2b2ea`.
+  The JUnit SHA-256 is
+  `db450f8e4cb70cb89d9f2ede66049c968ebff8dbc170e70e5d2363f9445a3a1d`.
+
+Exact commands:
+
+```bash
+make setup
+make native-test
+.venv/bin/python -m json.tool \
+  results/native_recheck_evidence/native_correctness.json
+sha256sum results/native_recheck_evidence/native_correctness.json \
+  results/native_recheck_evidence/native_correctness_junit.xml
+```
+
+Outcome: the source-frozen correctness prerequisite passed with actual native
+execution and may authorize offline smoke. No validation timing has run. The
+next resumable command is `make native-smoke`; any later executable or test
+change invalidates this evidence and requires `make native-test` again.
 
 ## Scope and source status
 
