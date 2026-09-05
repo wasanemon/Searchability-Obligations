@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-06 01:53 (Asia/Tokyo)
+Last updated: 2026-09-06 01:57 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -236,6 +236,47 @@ Outcome: the source-frozen correctness prerequisite passed with actual native
 execution and may authorize offline smoke. No validation timing has run. The
 next resumable command is `make native-smoke`; any later executable or test
 change invalidates this evidence and requires `make native-test` again.
+
+## Issue #3 source-frozen offline native smoke
+
+- `make native-smoke` completed the new, isolated `smoke-v3` namespace as run
+  `native-recheck-offline-smoke-20260905T165226725173Z-f4ee103dc9`. It executed
+  all four synthetic families, F/A/A-reference/N/P, beta 0 and positive beta,
+  O correctness rows, one real native backend, eight query blocks, 32 unique
+  measurement queries, and 224 raw rows. All 8/8 blocks completed; 128 native
+  rows had zero correctness or backend/call failures, and all four 4-query LB
+  audits passed with no failure. Raw comprises eight shards and 1,209,570
+  bytes under the ignored run directory.
+- The effective config hash is
+  `f4ee103dc91fca96e6d6593a2ed640eb25a651a6a834702bdcb1ea203bb95b9e`;
+  run manifest SHA-256 is
+  `426597a2c08099721460743f9f9ed501da25fe8fbd848a8aaa018040c3664e43`,
+  checkpoint SHA-256 is
+  `d9947c2708f2c207242a5cae0a282ff6d6d23703700969296e4c28f4cc97d0cb`,
+  and completion SHA-256 is
+  `12154af45644b454fb2a5f71c238e3bb40d5e2a361926d328b269f3a86d270df`.
+  The analyzed summary/gate SHA-256 values are respectively
+  `d3d7bbbf684cc24bf58b8bf323c9f82e6b298028b6bcf0200e48ab1c7f0e97e2` and
+  `c3e769b0931268bf475d4878ece769553cb0d096cf3e1196cb8694bfb62476a5`.
+- The smoke analyzer correctly wrote `NOT_PASSED` because smoke evidence is
+  synthetic/non-validation and no real Delta>=1,000 candidate can authorize a
+  fresh final lock. This is a structural smoke outcome, not the formal
+  validation conclusion. No final lock was created.
+- This post-registration smoke adds only four separately generated synthetic
+  split manifests. It neither reads TEXMEX vectors nor changes the already
+  frozen historical SIFT/GIST ID union or the `[1200,2200)` holdout decision;
+  the 44-manifest pre-registration audit remains immutable.
+
+Exact command:
+
+```bash
+make native-smoke
+```
+
+Outcome: offline compiled-path smoke passed and did not authorize final work.
+The next resumable command is `make native-validate`, using the already frozen
+validation config and correctness evidence. No source, test, config, policy, or
+holdout file may change during that run.
 
 ## Scope and source status
 
