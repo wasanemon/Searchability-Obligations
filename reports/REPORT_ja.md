@@ -383,10 +383,14 @@ self-validating manifest、SQLite publication の順で公開する。query は 
 revision、Delta view を pin する。古い generation を必要とする query がある間は、最新 generation の
 完成だけを理由に obligation/version を回収しない。
 
-fault injection は単なる正常 restart ではなく、insert/update/delete transaction、commit 後 grouping 前、
-group switch、generation file/fsync/rename/manifest/DB publish、旧 generation pin 中の GC 境界で
-subprocess を `os._exit` させて確認する。これは process crash の証拠であり、電源断、controller cache、
-filesystem corruption 全般の実証ではない。
+actual-process fault injection は単なる正常 restart ではなく、insert/update/delete transaction、
+commit 後 grouping 前、group catalog switch、および generation の
+index/metadata 作成、file/directory fsync、rename、manifest install、SQLite catalog publish の境界で、
+子 subprocess を `os._exit(86)` させて回復結果を確認する。一方、旧 generation を pin した query view と
+新 generation publish の交錯、および active pin 中の GC 拒否・pin 解放後の保守的 retention は、同一
+pytest process 内で順序を制御した interleaving test であり、process-crash test ではない。前者は
+process crash に対する証拠、後者は実装上の pin/GC protocol に対する証拠である。いずれも電源断、
+controller cache、filesystem corruption 全般を実証するものではない。
 
 TBD（最終再実行待ち）: lifecycle test count、実行時間、failure 数、artifact/command。
 

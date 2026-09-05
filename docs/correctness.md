@@ -32,9 +32,11 @@ conditions:
 - logical and version identifiers have a stable total order and a version is
   associated with exactly one logical identifier.
 
-NaN, infinity, a dimension mismatch, an out-of-range component, negative
-`beta`, and an invalid `k` are rejected before any certified result is
-returned.  Silently clipping or replacing such values is forbidden.  A
+NaN, infinity, a complex-valued vector/matrix, a dimension mismatch, an
+out-of-range component, negative `beta`, and an invalid `k` are rejected before
+any certified result is returned.  In particular, a complex-to-real cast that
+would discard the imaginary component is forbidden.  Silently clipping or
+replacing such values is forbidden.  A
 non-certified adapter may convert other input formats, but its conversion is
 outside this contract and the resulting canonical binary32 values must be
 recorded.
@@ -59,7 +61,12 @@ Fix one query `q`, MVCC snapshot `s`, and one pinned, immutable base generation
 `C` is materialized once and frozen.  A correctness comparison must pass that
 same collection, including the same versions, to the full-Delta reference and
 the proposed path.  Running HNSW twice is not an acceptable way to reconstruct
-`C`.  Faiss ordinals are translated to version keys before freezing it.
+`C`.  Faiss ordinals are translated to version keys before freezing it.  Its
+content hash binds the ordered version keys and vector bits to the canonical
+query hash, snapshot ID, base generation ID, full base-universe hash, and
+requested candidate count.  A production search validates all those fields and
+verifies every supplied version against its immutable base before using an
+externally supplied `C`; a caller-provided hash string is not trusted alone.
 
 When the relevant set has at least `k` elements, let `tau_ref` and `tau_prop`
 be the exact ordinary-L2 distance of the kth member of `R_ref` and `R_prop`.
@@ -82,6 +89,12 @@ member version keys, and a stored radius upper endpoint `r_hi` satisfying
 \[
 \forall x\in G,\quad d(c,x)\leq r_{hi}.
 \]
+
+At construction/load time, every contiguous matrix row must bit-match the
+corresponding member record (including the sign bit of zero), version keys may
+not repeat within or across groups, and group IDs must be unique.  Radius
+validation happens only after those ownership checks, so a radius cannot
+certify one matrix while search returns records from another.
 
 For a query-center distance interval `[dc_lo, dc_hi]`, define the rational
 lower bound
@@ -269,8 +282,11 @@ never the oracle.
   return all of them, and set the certificate status to
   `NOT_APPLICABLE_INSUFFICIENT_POPULATION`; no kth-distance statement is made.
 - If HNSW visibility filtering underfills `C`, replenish before freezing it.
-  If a configured candidate requirement still cannot be met, use the explicit
-  all-visible exact fallback and record the changed reference scope.
+  Enumerate the complete visible base universe, exactly rank all missing
+  versions, and supplement to the requested count.  If fewer visible base
+  versions exist, `C` contains all of them.  Both cases record the fallback
+  reason, visible count, and supplemented count; an unexplained underfilled ANN
+  result is never treated as the configured `C`.
 - If a distance interval, group radius, or catalog record cannot be certified,
   scan the affected group/version.  If uncertainty is global, use exact
   enumeration.  Never skip on an invalid bound.

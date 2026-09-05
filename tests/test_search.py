@@ -7,6 +7,7 @@ import math
 import numpy as np
 import pytest
 
+import searchability.search as search_module
 from searchability.groups import DeltaStore, Group, GroupBuildStats, GroupDirectory
 from searchability.models import CandidateSet, VectorRecord
 from searchability.oracle import (
@@ -127,6 +128,72 @@ def _assert_result_matches_oracle(result: object, oracle: OracleResult) -> None:
     assert _result_keys(result) == oracle.keys
     for actual, expected in zip(result.hits, oracle.hits):  # type: ignore[attr-defined]
         assert expected.distance_lower <= actual.distance <= expected.distance_upper
+
+
+def test_immutable_delta_visibility_is_cached_per_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidates = _candidate_set((_record(1, (5.0,)),), 1)
+    member = _record(2, (1.0,))
+    group = _group(0, (1.0,), (member,), radius_upper=0.0)
+    engine = _engine(1, groups=(group,))
+    calls = 0
+    original = Group.visible
+
+    def counted(self: Group, snapshot_id: int):
+        nonlocal calls
+        calls += 1
+        return original(self, snapshot_id)
+
+    monkeypatch.setattr(Group, "visible", counted)
+    query = np.asarray([0.0], dtype=np.float32)
+    engine.search_full_scan(query, k=1, candidate_set=candidates)
+    engine.search_pruned(query, k=1, beta=0.0, candidate_set=candidates)
+    engine.search_pruned(query, k=1, beta=0.1, candidate_set=candidates)
+    assert calls == 1
+
+
+def test_pruned_search_carries_intervals_without_final_distance_rescan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidates = _candidate_set((_record(1, (5.0,)),), 1)
+    raw = (_record(2, (4.0,)),)
+    members = (_record(3, (1.0,)), _record(4, (2.0,)))
+    group = _group(0, (1.5,), members)
+    engine = _engine(1, raw=raw, groups=(group,))
+    observed_rows: list[int] = []
+    original = search_module.distance_intervals
+
+    def counted(query: np.ndarray, vectors: np.ndarray):
+        observed_rows.append(int(np.asarray(vectors).shape[0]))
+        return original(query, vectors)
+
+    monkeypatch.setattr(search_module, "distance_intervals", counted)
+    result = engine.search_pruned(
+        np.asarray([0.0], dtype=np.float32),
+        k=4,
+        beta=0.0,
+        candidate_set=candidates,
+        no_pruning=True,
+    )
+    assert result.ids == (3, 4, 2, 1)
+    assert observed_rows == [2, 2]
+
+    ablation = engine.search_pruned(
+        np.asarray([0.0], dtype=np.float32),
+        k=4,
+        beta=0.0,
+        candidate_set=candidates,
+        no_pruning=True,
+        recompute_final_intervals=True,
+    )
+    assert ablation.ids == result.ids
+    assert observed_rows == [2, 2, 2, 2, 4]
+    assert (
+        ablation.receipt.certificate_details["final_interval_strategy"]
+        == "recomputed_full_survivor_matrix_ablation"
+    )
+    assert ablation.receipt.component_timings["final_interval_recompute_ns"] > 0
 
 
 def test_empty_delta_and_empty_total_population() -> None:
@@ -304,6 +371,12 @@ def test_positive_beta_without_skip_has_zero_observed_and_certified_gap() -> Non
     ("base_distance", "group_distance", "beta", "expected_action"),
     [
         (3.0, 3.0, 0.0, "scan"),  # exact LB = tau
+        (
+            3.0,
+            float(np.nextafter(np.float32(2.0), np.float32(-math.inf))),
+            1.0,
+            "scan",
+        ),  # one binary32 step before the strict-skip boundary
         (3.0, 2.0, 1.0, "scan"),  # exact LB = tau - beta
         (3.0, float(np.nextafter(np.float32(2.0), np.float32(math.inf))), 1.0, "skip"),
     ],

@@ -15,7 +15,7 @@ from typing import Sequence
 
 import numpy as np
 
-from .models import SearchHit, VectorRecord, as_float32_vector
+from .models import SearchHit, VectorRecord, as_float32_matrix, as_float32_vector
 
 
 UNIT_ROUNDOFF = 2.0 ** -53
@@ -65,7 +65,12 @@ def _gamma(operation_count: int) -> float:
     return result
 
 
-def distance_intervals(query: np.ndarray, vectors: np.ndarray) -> DistanceIntervals:
+def distance_intervals(
+    query: np.ndarray,
+    vectors: np.ndarray,
+    *,
+    chunk_rows: int = 8192,
+) -> DistanceIntervals:
     """Bound ordinary L2 distances from one stored float32 query to a matrix.
 
     `gamma_(d+2)` conservatively covers the subtraction error twice when its
@@ -75,47 +80,71 @@ def distance_intervals(query: np.ndarray, vectors: np.ndarray) -> DistanceInterv
     """
 
     q = as_float32_vector(query, name="query")
+    if isinstance(chunk_rows, bool) or not isinstance(chunk_rows, (int, np.integer)):
+        raise TypeError("chunk_rows must be an integer")
+    chunk_rows = int(chunk_rows)
+    if chunk_rows <= 0:
+        raise ValueError("chunk_rows must be positive")
+
+    # Validate and convert one block at a time.  Calling ``as_float32_matrix``
+    # on the complete GIST matrix would otherwise materialize complete
+    # float64 and float32 copies before the distance temporaries are allocated.
+    # Keeping only the three O(n) interval outputs and O(chunk_rows * d)
+    # temporaries makes the exhaustive exact comparator usable without changing
+    # any numerical decision.
     original = np.asarray(vectors)
     if original.ndim != 2:
         raise ValueError("vectors must be a two-dimensional matrix")
+    if not 1 <= original.shape[1] <= 4096:
+        raise ValueError("vectors dimension must be in [1, 4096]")
+    if not np.issubdtype(original.dtype, np.number) or np.issubdtype(
+        original.dtype, np.complexfloating
+    ):
+        raise TypeError("vectors must contain real numeric values")
     if original.shape[1] != q.shape[0]:
         raise ValueError("query/vector dimension mismatch")
     if original.shape[0] == 0:
+        # Exercise the canonical validator even for the empty case so its
+        # dtype and certified component-domain contract remains authoritative.
+        as_float32_matrix(original, name="vectors")
         empty = np.empty(0, dtype=np.float64)
         return DistanceIntervals(empty, empty.copy(), empty.copy())
-    original64 = np.asarray(original, dtype=np.float64, order="C")
-    if not np.all(np.isfinite(original64)):
-        raise ValueError("vectors contain NaN or infinity")
-    if np.any(np.abs(original64) > 1.0e15):
-        raise ValueError("vector component exceeds certified magnitude limit")
-    canonical = np.asarray(original64, dtype=np.float32, order="C")
-    if not np.all(np.isfinite(canonical)):
-        raise ValueError("vectors overflow float32 storage")
-    x64 = np.asarray(canonical, dtype=np.float64, order="C")
-
-    q64 = np.asarray(q, dtype=np.float64)
-    differences = x64 - q64
-    squared = differences * differences
-    sums = np.sum(squared, axis=1, dtype=np.float64)
-    if not np.all(np.isfinite(sums)):
-        raise ValueError("distance accumulation overflowed")
 
     gamma = _gamma(q.shape[0] + 2)
     denominator_high = math.nextafter(1.0 + gamma, math.inf)
     denominator_low = math.nextafter(1.0 - gamma, -math.inf)
-    lower_sq = np.nextafter(sums / denominator_high, -np.inf)
-    upper_sq = np.nextafter(sums / denominator_low, np.inf)
-    lower_sq = np.maximum(lower_sq, 0.0)
-    upper_sq = np.maximum(upper_sq, 0.0)
+    count = int(original.shape[0])
+    estimate = np.empty(count, dtype=np.float64)
+    lower = np.empty(count, dtype=np.float64)
+    upper = np.empty(count, dtype=np.float64)
+    q64 = np.asarray(q, dtype=np.float64)
+    for start in range(0, count, chunk_rows):
+        stop = min(count, start + chunk_rows)
+        canonical = as_float32_matrix(original[start:stop], name="vectors")
+        x64 = np.asarray(canonical, dtype=np.float64, order="C")
+        differences = x64 - q64
+        squared = differences * differences
+        sums = np.sum(squared, axis=1, dtype=np.float64)
+        if not np.all(np.isfinite(sums)):
+            raise ValueError("distance accumulation overflowed")
 
-    estimate = np.sqrt(sums)
-    lower = np.nextafter(np.sqrt(lower_sq), -np.inf)
-    upper = np.nextafter(np.sqrt(upper_sq), np.inf)
-    lower = np.maximum(lower, 0.0)
-    upper = np.maximum(upper, 0.0)
-    zeros = sums == 0.0
-    lower[zeros] = 0.0
-    upper[zeros] = 0.0
+        lower_sq = np.nextafter(sums / denominator_high, -np.inf)
+        upper_sq = np.nextafter(sums / denominator_low, np.inf)
+        lower_sq = np.maximum(lower_sq, 0.0)
+        upper_sq = np.maximum(upper_sq, 0.0)
+        estimate_block = np.sqrt(sums)
+        lower_block = np.maximum(
+            np.nextafter(np.sqrt(lower_sq), -np.inf), 0.0
+        )
+        upper_block = np.maximum(
+            np.nextafter(np.sqrt(upper_sq), np.inf), 0.0
+        )
+        zeros = sums == 0.0
+        lower_block[zeros] = 0.0
+        upper_block[zeros] = 0.0
+        estimate[start:stop] = estimate_block
+        lower[start:stop] = lower_block
+        upper[start:stop] = upper_block
     return DistanceIntervals(estimate=estimate, lower=lower, upper=upper)
 
 

@@ -202,19 +202,22 @@ where converting a binary32 to Python `float` is exact.  Exact squared
 fractions, followed by `(logical_id, version_id)`, decide final order.  This
 resolves ties without assuming that interval width is an epsilon.
 
-To construct an ordinary-distance upper endpoint from an exact squared
-fraction `S_exact`:
+To construct ordinary-distance endpoints from an exact squared fraction
+`S_exact`:
 
-1. Convert `S_exact` to binary64 and compare the resulting
-   `Fraction.from_float(z)` back to `S_exact`; if it is below, move `z` once
-   toward `+inf`.  Now `z >= S_exact` exactly.
-2. Compute `sqrt(z)` and move that result once toward `+inf` to cover the
-   square-root rounding.
-3. Convert that endpoint back with `Fraction.from_float` for certificate
-   arithmetic.
-4. Take the minimum with the final kth interval upper endpoint, another proven
-   upper bound.  This cap preserves both safety and the monotonic-threshold
-   argument used by the correctness proof.
+1. Use `sqrt(float(S_exact))` only as a binary64 seed.  It is not accepted as a
+   bound merely because the host square root is expected to be correctly
+   rounded.
+2. Convert the seed back to an exact rational square.  Move the lower candidate
+   with `nextafter(..., -inf)` until `lower**2 <= S_exact`, and move the upper
+   candidate with `nextafter(..., +inf)` until `upper**2 >= S_exact`.  Every
+   comparison is between `Fraction` values, so the endpoints are proven rather
+   than epsilon-expanded guesses.
+3. Use the lower endpoint for result validation and convert the upper endpoint
+   with `Fraction.from_float` for certificate arithmetic.
+4. Take the minimum of the upper endpoint with the final kth interval upper
+   endpoint, another proven upper bound.  This cap preserves both safety and
+   the monotonic-threshold argument used by the correctness proof.
 
 This quantity is `tau_exact_hi`; the word `exact` refers to the exact
 Fraction-based squared-distance/ranking path, while `_hi` makes clear that an
@@ -234,8 +237,9 @@ without decimal ambiguity.
 ## 7. Limits and safe degradation
 
 - The derivation applies only to canonical binary32 vector/center components
-  in the stated range and dimension.  Binary64 centers require a different
-  subtraction analysis and are rejected by this mode.
+  in the stated range and dimension.  Other real inputs are first canonicalized
+  as the documented stored binary32 object.  Complex inputs are rejected before
+  conversion; their imaginary components are never silently discarded.
 - The bound describes the specified bulk kernel, not arbitrary BLAS/GPU/Faiss
   distance code.  Candidate generation may use Faiss, but certified pruning
   recomputes the relevant distances here.
@@ -245,5 +249,12 @@ without decimal ambiguity.
   correct response is more work or an explicit non-certified mode, never a
   narrower unproved interval.
 - The analysis assumes functioning IEEE arithmetic and uncorrupted inputs.
-  Stored vectors, centers, radii, and manifests are checksummed by the lifecycle
-  layer; failed validation prevents a certified receipt.
+  The lifecycle layer verifies the published Base-generation manifest and the
+  SHA-256/length bindings for its Faiss index, metadata, and ordinal map before
+  use.  For Delta it reconstructs a pinned SQLite view, validates each loaded
+  group's dimensions, bitwise member payloads, and radius coverage, and binds
+  that reconstructed view (including vectors, centers, radii, and membership)
+  into the Receipt with a SHA-256 digest.  This is not an independent checksum
+  of every SQLite row/page and does not detect arbitrary storage or hardware
+  corruption.  A supported validation failure forces the documented exact/raw
+  fallback or prevents use of the affected accelerator.

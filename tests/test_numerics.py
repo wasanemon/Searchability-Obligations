@@ -75,6 +75,20 @@ def test_intervals_cover_cancellation_outliers_and_long_accumulation() -> None:
     _assert_interval_contains_exact(query, vectors)
 
 
+def test_chunked_intervals_are_identical_for_different_chunk_sizes() -> None:
+    rng = np.random.default_rng(99173)
+    query = rng.normal(size=33).astype(np.float32)
+    vectors = rng.normal(size=(97, 33)).astype(np.float32)
+    one = distance_intervals(query, vectors, chunk_rows=1)
+    uneven = distance_intervals(query, vectors, chunk_rows=17)
+    whole = distance_intervals(query, vectors, chunk_rows=1000)
+    for field in ("estimate", "lower", "upper"):
+        assert np.array_equal(getattr(one, field), getattr(uneven, field))
+        assert np.array_equal(getattr(one, field), getattr(whole, field))
+    with pytest.raises(ValueError, match="positive"):
+        distance_intervals(query, vectors, chunk_rows=0)
+
+
 @pytest.mark.parametrize(
     "value",
     [

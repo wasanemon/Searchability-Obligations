@@ -14,11 +14,11 @@ to scanning.
 | `VersionStore` | Canonical float32 vectors and MVCC begin/end commit sequences. |
 | `ObligationStore` | Durable insert/update/delete effects not covered by each eligible base generation. |
 | `DeltaStore` | A query view of visible raw and published-grouped obligations; never the source of durability by itself. |
-| `GroupDirectory` | Immutable centers, conservative radius upper endpoints, contiguous member arrays, catalog revision, and checksums. |
+| `GroupDirectory` | Immutable in-memory centers, conservative radius upper endpoints, and contiguous member arrays reconstructed from one SQLite catalog revision. |
 | `SearchEngine` | Pins a view, freezes base candidates, scans raw data, certifies group skips, exactly resolves the boundary, and merges results. |
 | `Oracle` | Separate `Fraction`-based exhaustive enumeration over one explicit frozen candidate universe. |
 | `Receipt` | Scope, numeric mode, certificate, fallback, counts, hashes, and component timings. |
-| `GenerationManager` | Builds, validates, publishes, pins, recovers, and conservatively collects immutable generations. |
+| `GenerationManager` | Builds, validates, loads, and inventories immutable generation directories; the SQLite lifecycle store publishes and pins them. |
 | `Benchmark` | Supplies common frozen inputs to methods, separates micro/end-to-end timing, and saves per-query raw records. |
 
 The first performance kernel is insert-only and operates on immutable in-memory
@@ -84,6 +84,11 @@ Generations are never modified after publication.  Searches and Faiss `add`
 do not run concurrently on the same index.  Building a replacement occurs in a
 separate directory and process/object.
 
+The manifest records the thread count used to build the generation as
+provenance.  Loading does not turn that historical value into a runtime policy:
+the current store's configured thread count is installed on the loaded
+`BaseIndex` and applied before Faiss search.
+
 ## 4. Search-view acquisition
 
 At query start, one consistent SQLite read view obtains and pins:
@@ -120,10 +125,17 @@ For the pinned view, the pipeline is:
 1. Search the immutable HNSW with configured `efSearch` and overfetch.
 2. Translate ordinals to version keys, apply visibility at `s`, and deduplicate.
 3. Replenish candidates before freezing if filtering caused underfill.  Record
-   the request count, attempts, rejections, and final candidate-set hash.
+   the request count, attempts, rejections, complete visible-base count,
+   supplementation count, fallback reason, and final candidate-set hash.  If
+   ANN remains underfilled, enumerate the complete visible base universe and
+   exactly rank missing versions; if the visible population is smaller than the
+   request, include every visible version and report that explicitly.
 4. Freeze this exact `C`; both proposed and full-Delta correctness paths receive
-   it.  End-to-end benchmarks include steps 1--3, while coupled Delta
-   microbenchmarks begin from the saved `C`.
+   it.  Its hash binds ordered keys/vector bits to the query, snapshot,
+   generation, complete base-universe hash, and request count.  Search rejects
+   an external `C` whose binding or records do not match the pinned base.
+   End-to-end benchmarks include steps 1--3, while coupled Delta microbenchmarks
+   begin from the saved `C`.
 5. Scan every raw-pending vector with the certified bulk float64 kernel.
 6. Compute conservative group lower bounds, order groups by
    `(LB_lower, group_id)`, and scan or skip using the strict Fraction rule in
@@ -151,13 +163,16 @@ Grouping follows a copy-then-publish protocol:
 1. Read a stable set of committed raw obligation/version keys.  They remain
    eligible for raw scanning.
 2. Build immutable, contiguous member arrays and compute every member's
-   certified center-distance upper endpoint.  Radius is their maximum.
-3. Write data and manifest to a temporary location, fsync files, verify hashes,
-   fsync the directory, and atomically rename to its final immutable name.
-4. In one SQLite catalog transaction, register the complete group membership
-   and advance the catalog revision.  Only this transaction changes those
-   members from raw to grouped for new readers.
-5. Retain underlying version/obligation data according to the generation and
+   certified center-distance upper endpoint.  Before using a radius, verify
+   that every row bit-matches its member version, every version key has one
+   group owner, and group IDs are unique.  Radius is their maximum.
+3. In one SQLite catalog transaction, insert the complete center/radius and
+   membership rows under a new revision, then advance the singleton catalog
+   revision.  Until that transaction commits, readers reconstruct members as
+   raw from retained version/obligation rows; after commit, new readers
+   reconstruct the immutable groups.  There is no separate group-directory
+   file or rename protocol in this reference implementation.
+4. Retain underlying version/obligation data according to the generation and
    snapshot GC rules; publication is not permission to erase it.
 
 A query that pinned the old revision continues to see the raw members.  A new
@@ -171,13 +186,18 @@ same atomic catalog switch.
 For a chosen committed cutoff `p`, generation construction is:
 
 1. Open a stable database snapshot at `p` and build the Faiss index plus
-   ordinal/version metadata in a unique temporary generation directory.
-2. Write a manifest containing lengths and cryptographic checksums.  Flush and
-   fsync each file, then fsync the temporary directory.
+   ordinal/version metadata in a unique `.tmp-...` generation directory.
+2. Flush and fsync the index and metadata files, then fsync the temporary
+   directory.  No manifest or SQLite reference exists yet.
 3. Atomically rename the directory to the final generation name and fsync its
-   parent directory.
-4. In a durable SQLite transaction, insert the validated generation record and
-   publish it as eligible/current.  Keep prior generation records and files.
+   parent directory.  User generation IDs beginning with `.tmp-` are reserved
+   and rejected, so recovery cannot confuse a final directory with a temporary.
+4. Atomically install and fsync the self-validating manifest *inside the renamed
+   final directory*.  A crash before this step leaves an unreferenced invalid
+   orphan; a crash after it leaves an unreferenced complete orphan.
+5. Revalidate lengths and cryptographic hashes, then in a durable SQLite
+   transaction insert the generation record and publish it as eligible.
+   Keep prior generation records and files.
 
 The database never points to a generation before its files are durable.  On
 startup, recovery verifies manifests, lengths, hashes, numeric contract, and
@@ -228,17 +248,23 @@ The implementation exposes fault points and verifies these outcomes:
 
 | Fault/interleaving | Required recovery/result |
 |---|---|
-| Process exits during vector/obligation transaction | Both vector effect and obligation are committed, or neither is. |
+| Exit after an insert version row but before its obligation row | SQLite rolls the transaction back: snapshot remains `0`, with no visible version and no obligation in the fixed test fixture. |
+| Exit after an update closes/inserts versions but before its obligation row | SQLite rolls the transaction back: snapshot remains `1`, old key `(7, 1)` remains visible, and only its original insert obligation remains. |
+| Exit after a delete closes the old interval but before its obligation row | SQLite rolls the transaction back: snapshot remains `1`, key `(7, 1)` remains visible, and only its original insert obligation remains. |
 | Exit after commit and before grouping | The version is reconstructed as raw pending and searchable. |
 | Query overlaps group catalog switch | Its pinned revision contains the member in raw or group form; never neither. |
-| Exit while writing/flushing/renaming/publishing a generation | Recovery uses the old generation plus obligations, or a fully validated new generation. |
+| Exit after index/metadata writes or their directory fsync | A `.tmp-...` directory is ignored; recovery uses the old generation plus obligations. |
+| Exit after directory rename but before/after manifest install or before SQLite publication | The final directory is an unreferenced orphan; recovery uses the old generation plus obligations. |
+| Exit after SQLite generation publication | Recovery validates and uses the new generation; if validation fails, it marks it invalid and uses the prior valid generation plus obligations. |
 | Old query remains pinned while new generation publishes and GC runs | Old generation, obligations, versions, and tombstones it needs remain. |
 | Update/delete followed by old and new snapshot searches | Each result uses its snapshot's version intervals; current-latest state cannot overwrite history. |
 
-Fault injection uses process termination at the named boundaries, reopens the
-database and files, and compares the explicit visible version-key set with the
-independent oracle.  A clean shutdown/restart alone is not labeled a crash
-test.
+Fault injection uses `os._exit(86)` at the named boundaries, reopens the
+database and files, and checks the fixed snapshot, visible version-key,
+obligation-kind, raw/group-count, and selected-generation expectations listed
+above.  These lifecycle tests complement, but do not themselves invoke, the
+separate mathematical search oracle.  A clean shutdown/restart alone is not
+labeled a crash test.
 
 ## 10. Operations and explicit fallbacks
 
@@ -276,7 +302,7 @@ Every search receipt contains at least:
 
 ```text
 snapshot_id, snapshot_seq, base_generation, covered_commit_seq,
-group_catalog_revision, candidate_set_hash, metric, k, requested_beta,
+group_catalog_revision, delta_view_hash, candidate_set_hash, metric, k, requested_beta,
 certified_beta_fraction, certified_beta_display, certificate_status,
 tau_returned, tau_exact_upper, min_skipped_lb,
 raw_pending_scanned, groups_scanned, groups_skipped, vectors_scanned,
@@ -284,9 +310,36 @@ visibility_rejections, fallback_reason, numeric_mode,
 component_timings, config_hash, dataset_or_store_hash
 ```
 
-Audit mode additionally records group IDs, exact version keys, rational bound
-endpoints, and skip decisions.  A receipt is reproducibility evidence tied to
-checksummed local data; it is not a self-authenticating or cryptographic proof.
+`delta_view_hash` is a deterministic SHA-256 over the pinned snapshot,
+generation coverage, catalog revision, raw/group ownership, vector-version
+intervals and bits, centers, and radius bits.  A group payload that fails
+validation is scanned raw exactly once per version; the receipt's fallback
+reason and certificate details record affected group/vector counts and stable
+failure categories.  Audit mode additionally records group IDs, exact version
+keys, rational bound endpoints, and skip decisions.  A receipt is
+reproducibility evidence tied to checksummed local data; it is not a
+self-authenticating or cryptographic proof.
+
+Component timers are disjoint wall-clock intervals inside one search call.  In
+the reference, `candidate_delta_distance_ns` covers materialization and one
+bulk distance pass over frozen `C` plus visible Delta; that value is not copied
+into raw and group timer fields.  In pruning, `candidate_raw_distance_ns`,
+lower-bound calculation, group ordering, each scanned-group bulk pass, final
+merge/refinement, and receipt serialization are non-overlapping phases.
+`base_search_ns` is provenance copied from creation of frozen `C`; it occurred
+before a coupled Delta call and must not be added to that call's micro latency.
+Final merge carries the already computed estimate/lower/upper interval row for
+each surviving logical ID into exact boundary ranking; it does not perform a
+second bulk distance pass.  Matrix packing and exact boundary refinement belong
+only to `merge_ns`.  The benchmark-only
+`group_pruning_beta0_recompute_intervals_ablation` deliberately restores that
+second pass, with identical pruning decisions and certified ranking, so the
+interval-carry optimization can be isolated from sphere pruning.  Its repeated
+pass is recorded in the disjoint `final_interval_recompute_ns` component and is
+contained in the method wall, but not `merge_ns`.  `receipt_ns` includes receipt allocation and one complete
+`to_dict` serialization preview, excluding only the final immutable
+timing-field replacement.  Benchmark JSON serialization after the call is not
+included in query latency, and LB audit collection is a separate non-timed run.
 
 ## 12. Non-goals and claims boundary
 
