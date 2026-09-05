@@ -1,6 +1,40 @@
 # Research state
 
-Last updated: 2026-09-05 21:48 (Asia/Tokyo)
+Last updated: 2026-09-05 23:49 (Asia/Tokyo)
+
+## Issue #3 native recheck start
+
+- GitHub Issue #3 was read in full through the connected GitHub application at
+  `2026-09-05 23:46 JST`; it is open, was updated at
+  `2026-09-05T14:44:29Z`, and has zero comments.
+- PR #2 was checked at the same start point. It is open, unmerged, and has head
+  branch `codex/issue-1` at local commit
+  `2ddada6f162c4ac0759cc238b32483c37cd5358e` with base `main`.
+- The working tree was clean on `codex/issue-1`. A separate stacked branch,
+  `codex/issue-3-native`, was created from exactly that SHA; PR #2's branch was
+  not modified and will not be merged automatically.
+- Required pre-work reading completed: `AGENTS.md`, this state file,
+  `reports/REPORT_ja.md`, `docs/correctness.md`, and `docs/numerics.md`. Existing
+  negative results, immutable evidence, and the preserved incomplete run remain
+  untouched.
+
+Exact start commands:
+
+```bash
+git status --short --branch
+git rev-parse HEAD
+git remote -v
+git log --oneline --decorate -8
+git switch -c codex/issue-3-native
+date '+%Y-%m-%d %H:%M:%S %Z'
+git status --short --branch
+git rev-parse HEAD
+```
+
+Outcome: start-state and branching gate passed. No experiment has yet been run
+for Issue #3. The next resumable phase is a development-query profile of the
+old Python pruning path, followed by the compiled F/N/P kernel design and
+correctness-first tests.
 
 ## Scope and source status
 
