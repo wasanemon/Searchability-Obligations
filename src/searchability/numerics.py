@@ -283,9 +283,140 @@ def stable_topk(
                 source=sources[index],
             )
         )
-    tau_low, tau_high = sqrt_fraction_bracket(selected[-1][0])
-    # Both are proven upper bounds.  Keeping their minimum strengthens the
-    # certificate and links the final exact boundary to the monotone interval
-    # statistic used by every earlier skip decision.
-    tau_high = min(tau_high, kth_upper_bound(bounds.upper, take))
+    if len(records) < k:
+        # Return every available row in exact order, but do not call the last
+        # row a kth result when the contractual population is underfilled.
+        tau_low = None
+        tau_high = None
+    else:
+        tau_low, tau_high = sqrt_fraction_bracket(selected[-1][0])
+        # Both are proven upper bounds.  Keeping their minimum strengthens the
+        # certificate and links the final exact boundary to the monotone interval
+        # statistic used by every earlier skip decision.
+        tau_high = min(tau_high, kth_upper_bound(bounds.upper, take))
     return RankedTopK(tuple(hits), tau_low, tau_high, len(relevant))
+
+
+def adaptive_stable_topk(
+    query: np.ndarray,
+    records: Sequence[VectorRecord],
+    vectors: np.ndarray,
+    sources: Sequence[str],
+    k: int,
+    intervals: DistanceIntervals | None = None,
+) -> RankedTopK:
+    """Resolve exact top-k order by exact-ranking only overlapping intervals.
+
+    Exact distances lie inside their supplied ordinary-L2 intervals. Sorting
+    by lower endpoint and joining transitively overlapping intervals therefore
+    partitions candidates into components with a proven strict order between
+    components. Singleton components need no exact arithmetic; non-singleton
+    components that intersect the returned prefix use the full exact key.
+    """
+
+    k = validate_k(k)
+    if len(records) != len(sources):
+        raise ValueError("records/sources length mismatch")
+    matrix = np.asarray(vectors, dtype=np.float32)
+    if matrix.ndim != 2 or matrix.shape[0] != len(records):
+        raise ValueError("records/vectors length mismatch")
+    if not records:
+        return RankedTopK((), None, None, 0)
+    bounds = intervals or distance_intervals(query, matrix)
+    estimate = np.asarray(bounds.estimate, dtype=np.float64)
+    lower = np.asarray(bounds.lower, dtype=np.float64)
+    upper = np.asarray(bounds.upper, dtype=np.float64)
+    for name, values in (
+        ("estimate", estimate),
+        ("lower", lower),
+        ("upper", upper),
+    ):
+        if values.shape != (len(records),):
+            raise ValueError(f"distance interval {name} shape mismatch")
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"distance interval {name} must be finite")
+    if (
+        np.any(lower < 0.0)
+        or np.any(lower > estimate)
+        or np.any(estimate > upper)
+    ):
+        raise ValueError("distance intervals are invalid")
+
+    take = min(k, len(records))
+    cutoff = kth_upper_bound(upper, take)
+    relevant = np.flatnonzero(lower <= cutoff).tolist()
+    ordered = sorted(
+        relevant,
+        key=lambda index: (
+            float(lower[index]),
+            float(upper[index]),
+            records[index].logical_id,
+            records[index].version_id,
+            index,
+        ),
+    )
+
+    exact: dict[int, Fraction] = {}
+
+    def exact_value(index: int) -> Fraction:
+        value = exact.get(index)
+        if value is None:
+            value = exact_squared_l2(query, matrix[index])
+            exact[index] = value
+        return value
+
+    components: list[list[int]] = []
+    running_upper = -math.inf
+    for index in ordered:
+        lower_endpoint = float(lower[index])
+        upper_endpoint = float(upper[index])
+        if not components or lower_endpoint > running_upper:
+            components.append([index])
+            running_upper = upper_endpoint
+        else:
+            components[-1].append(index)
+            running_upper = max(running_upper, upper_endpoint)
+
+    prefix: list[int] = []
+    for component in components:
+        if len(prefix) >= take:
+            break
+        if len(component) > 1:
+            component = sorted(
+                component,
+                key=lambda index: (
+                    exact_value(index),
+                    records[index].logical_id,
+                    records[index].version_id,
+                ),
+            )
+        prefix.extend(component)
+    selected = prefix[:take]
+    if len(selected) != take:
+        raise RuntimeError("adaptive ranking underfilled top-k")
+
+    tau_low: float | None = None
+    tau_high: float | None = None
+    if len(records) >= k:
+        kth_exact = exact_value(selected[k - 1])
+        tau_low, exact_tau_high = sqrt_fraction_bracket(kth_exact)
+        tau_high = min(exact_tau_high, kth_upper_bound(upper, take))
+
+    hits: list[SearchHit] = []
+    for index in selected:
+        squared = exact.get(index)
+        distance = (
+            float(estimate[index])
+            if squared is None
+            else math.sqrt(float(squared))
+        )
+        record = records[index]
+        hits.append(
+            SearchHit(
+                logical_id=record.logical_id,
+                version_id=record.version_id,
+                distance=distance,
+                source=sources[index],
+            )
+        )
+    return RankedTopK(tuple(hits), tau_low, tau_high, len(exact))

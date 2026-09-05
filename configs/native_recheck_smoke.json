@@ -1,0 +1,126 @@
+{
+  "schema_version": 2,
+  "study_id": "issue-3-native-recheck",
+  "run_name": "native-recheck-offline-smoke",
+  "phase": "smoke",
+  "evidence_role": "smoke",
+  "output_root": "results/native_recheck_runs/smoke-v3",
+  "threads": 1,
+  "process_sessions": 1,
+  "warmup_queries": 1,
+  "repetitions": 1,
+  "query_block_size": 4,
+  "method_order_seed": 6202050,
+  "bootstrap_resamples": 2000,
+  "bootstrap_seed": 6202052,
+  "independent_oracle_queries": 4,
+  "independent_oracle_max_population": 256,
+  "lb_audit_queries": 4,
+  "timing_scopes": ["micro", "composed_e2e", "api_wall"],
+  "methods": [
+    {"symbol": "O", "method": "old_same_c_reference", "timed_primary": false},
+    {"symbol": "F", "method": "native_full_delta_scan"},
+    {
+      "symbol": "A",
+      "method": "optimized_faiss_delta_flat",
+      "retain_timing_when_quality_mismatch": true
+    },
+    {
+      "symbol": "A-reference",
+      "method": "faiss_order_lightweight_merge",
+      "eligible_for_gate": false
+    },
+    {"symbol": "N", "method": "native_group_no_pruning"},
+    {"symbol": "P", "method": "native_group_pruning"}
+  ],
+  "phases": [
+    {
+      "id": "native-correctness-gate",
+      "before_timing": true,
+      "reuse_one_frozen_candidate_set": true,
+      "require_actual_native_call": true
+    },
+    {
+      "id": "offline-smoke-timing",
+      "query_partition": "test_queries",
+      "beta_factors_including_implicit_zero": [0.0, 0.05]
+    }
+  ],
+  "defaults": {
+    "k": 5,
+    "candidate_count": 16,
+    "n_groups": 4,
+    "raw_pending_count": 2,
+    "center_training_size": 96,
+    "kmeans_iterations": 5,
+    "positive_beta_factors": [0.05],
+    "positive_beta_min": 1e-12,
+    "base_hnsw_ef_search": 24,
+    "hnsw_m": 8,
+    "hnsw_ef_construction": 40
+  },
+  "experiments": [
+    {
+      "id": "synthetic-clustered",
+      "axis": "offline_smoke",
+      "dataset": {
+        "type": "synthetic",
+        "kind": "clustered",
+        "n_base": 96,
+        "n_delta": 24,
+        "n_validation": 4,
+        "n_test": 8,
+        "dimension": 16,
+        "clusters": 6,
+        "seed": 201
+      },
+      "group_seed": 1201
+    },
+    {
+      "id": "synthetic-high-dimensional-isotropic",
+      "axis": "offline_smoke",
+      "dataset": {
+        "type": "synthetic",
+        "kind": "isotropic",
+        "n_base": 96,
+        "n_delta": 24,
+        "n_validation": 4,
+        "n_test": 8,
+        "dimension": 128,
+        "seed": 202
+      },
+      "group_seed": 1202
+    },
+    {
+      "id": "synthetic-delta-near-queries",
+      "axis": "offline_smoke_intentional_query_correlation",
+      "dataset": {
+        "type": "synthetic",
+        "kind": "delta_near_queries",
+        "n_base": 96,
+        "n_delta": 24,
+        "n_validation": 4,
+        "n_test": 8,
+        "dimension": 16,
+        "seed": 203
+      },
+      "group_seed": 1203
+    },
+    {
+      "id": "synthetic-outlier-radius",
+      "axis": "offline_smoke",
+      "dataset": {
+        "type": "synthetic",
+        "kind": "outlier_radius",
+        "n_base": 96,
+        "n_delta": 24,
+        "n_validation": 4,
+        "n_test": 8,
+        "dimension": 16,
+        "clusters": 6,
+        "seed": 204
+      },
+      "group_seed": 1204
+    }
+  ]
+}

@@ -1,0 +1,1439 @@
+#!/usr/bin/env python3
+"""Generate the Japanese Issue #3 decision report from saved native evidence."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from pathlib import Path, PurePosixPath
+import statistics
+from typing import Any, Mapping, Sequence
+
+import numpy as np
+
+from searchability.artifacts import (
+    atomic_write_bytes,
+    file_sha256,
+    implementation_tree_sha256,
+    object_sha256,
+)
+from searchability.native import native_build_info
+from searchability.native_analysis import load_native_evidence
+
+
+def _read(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"expected object: {path}")
+    return value
+
+
+def _query_medians(
+    rows: Sequence[Mapping[str, Any]], experiment: str, method: str, field: str
+) -> dict[tuple[str, str, str, int], float]:
+    grouped: dict[tuple[str, str, str, int], list[float]] = {}
+    for row in rows:
+        if row.get("experiment_id") != experiment or row.get("method") != method:
+            continue
+        value = row.get(field)
+        if value is None:
+            continue
+        key = (
+            str(row.get("run_id", "unspecified")),
+            str(row.get("session_id", "unspecified")),
+            str(row["query_id"]),
+            int(row.get("query_position", -1)),
+        )
+        grouped.setdefault(key, []).append(float(value))
+    return {key: float(statistics.median(values)) for key, values in grouped.items()}
+
+
+def _percentiles(values: Sequence[float]) -> tuple[float | None, float | None, float | None]:
+    if not values:
+        return None, None, None
+    array = np.asarray(values, dtype=np.float64) / 1_000_000.0
+    return tuple(float(np.percentile(array, value)) for value in (50, 95, 99))  # type: ignore[return-value]
+
+
+def _fmt(value: float | None, digits: int = 3) -> str:
+    return "—" if value is None else f"{value:.{digits}f}"
+
+
+def _comparison_lookup(summary: Mapping[str, Any]) -> dict[tuple[str, str, str], Mapping[str, Any]]:
+    result: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    for row in summary.get("comparisons", []):
+        if row.get("metric") != "api_wall":
+            continue
+        result[
+            (
+                str(row["experiment_id"]),
+                str(row["proposed_method"]),
+                str(row["baseline_role"]),
+            )
+        ] = row
+    return result
+
+
+def _component_median(
+    rows: Sequence[Mapping[str, Any]], experiment: str, method: str, field: str
+) -> float | None:
+    values: list[float] = []
+    for row in rows:
+        if row.get("experiment_id") != experiment or row.get("method") != method:
+            continue
+        receipt = row.get("receipt")
+        if not isinstance(receipt, dict) or receipt.get(field) is None:
+            continue
+        values.append(float(receipt[field]))
+    return None if not values else float(statistics.median(values))
+
+
+def _n_over_p(
+    rows: Sequence[Mapping[str, Any]], experiment: str, p_method: str
+) -> float | None:
+    n_methods = {
+        str(row["method"])
+        for row in rows
+        if row.get("experiment_id") == experiment and row.get("method_role") == "N"
+    }
+    if len(n_methods) != 1:
+        return None
+    n_values = _query_medians(rows, experiment, next(iter(n_methods)), "api_wall_latency_ns")
+    p_values = _query_medians(rows, experiment, p_method, "api_wall_latency_ns")
+    keys = set(n_values).intersection(p_values)
+    if not keys:
+        return None
+    logs = [math.log(n_values[key] / p_values[key]) for key in keys]
+    return math.exp(math.fsum(logs) / len(logs))
+
+
+def _completed_artifacts(
+    input_path: Path,
+    source_runs: Sequence[Mapping[str, Any]],
+) -> tuple[
+    dict[str, list[Mapping[str, Any]]],
+    dict[str, list[Mapping[str, Any]]],
+    dict[str, list[Mapping[str, Any]]],
+    list[dict[str, Any]],
+]:
+    """Load ancillary evidence from exactly the runs accepted by the analyzer."""
+
+    absolute_root = input_path.absolute()
+    if (
+        input_path.is_symlink()
+        or not input_path.is_dir()
+        or input_path.resolve(strict=True) != absolute_root
+    ):
+        raise RuntimeError("native evidence root is missing or traverses a symlink")
+    root = absolute_root
+    expected: dict[str, Mapping[str, Any]] = {}
+    for run in source_runs:
+        run_id = str(run.get("run_id", ""))
+        completion_sha = run.get("completion_sha256")
+        if (
+            not run_id
+            or run_id in expected
+            or not isinstance(completion_sha, str)
+            or len(completion_sha) != 64
+        ):
+            raise RuntimeError("analyzer-accepted run identities are incomplete/duplicate")
+        expected[run_id] = run
+    if not expected:
+        raise RuntimeError("analyzer accepted no completed runs")
+
+    builds: dict[str, list[Mapping[str, Any]]] = {}
+    audits: dict[str, list[Mapping[str, Any]]] = {}
+    cache_audits: dict[str, list[Mapping[str, Any]]] = {}
+    bound_runs: list[dict[str, Any]] = []
+    observed: set[str] = set()
+    completion_paths = sorted(root.rglob("COMPLETED.json"))
+    for completion_path in completion_paths:
+        run_dir = completion_path.parent
+        manifest_path = run_dir / "run_manifest.json"
+        if (
+            completion_path.is_symlink()
+            or not completion_path.is_file()
+            or manifest_path.is_symlink()
+            or not manifest_path.is_file()
+        ):
+            raise RuntimeError(f"completion/manifest is missing, non-regular, or symlinked: {run_dir}")
+        try:
+            completion_path.resolve(strict=True).relative_to(root)
+            manifest_path.resolve(strict=True).relative_to(root)
+        except (FileNotFoundError, ValueError) as error:
+            raise RuntimeError(f"completion/manifest escapes evidence root: {run_dir}") from error
+        manifest = _read(manifest_path)
+        run_id = str(manifest.get("run_id", ""))
+        accepted = expected.get(run_id)
+        if accepted is None:
+            raise RuntimeError(f"orphan/unaccepted COMPLETED.json found: {run_dir}")
+        if run_id in observed:
+            raise RuntimeError(f"duplicate COMPLETED.json for accepted run: {run_id}")
+        if (
+            file_sha256(completion_path) != accepted.get("completion_sha256")
+            or manifest.get("config_hash") != accepted.get("config_hash")
+            or manifest.get("implementation_tree_sha256")
+            != accepted.get("implementation_tree_sha256")
+        ):
+            raise RuntimeError(f"completion is not bound to analyzer-accepted run: {run_id}")
+        observed.add(run_id)
+        completion = _read(completion_path)
+        entries = completion.get("ancillary_files")
+        if not isinstance(entries, list) or not entries:
+            raise RuntimeError(f"completion has no ancillary inventory: {run_dir}")
+        inventory: dict[str, Mapping[str, Any]] = {}
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                raise RuntimeError(f"malformed ancillary inventory: {run_dir}")
+            relative_text = entry["path"]
+            relative = PurePosixPath(relative_text)
+            if (
+                not relative_text
+                or "\\" in relative_text
+                or relative.is_absolute()
+                or relative.as_posix() != relative_text
+                or any(part in {"", ".", ".."} for part in relative.parts)
+                or relative_text in inventory
+            ):
+                raise RuntimeError(f"unsafe/duplicate ancillary path: {entry.get('path')}")
+            path = run_dir.joinpath(*relative.parts)
+            try:
+                path.resolve(strict=True).relative_to(run_dir.resolve(strict=True))
+            except (FileNotFoundError, ValueError) as error:
+                raise RuntimeError(f"ancillary path escapes run: {relative_text}") from error
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or path.stat().st_size != int(entry.get("bytes", -1))
+                or file_sha256(path) != entry.get("sha256")
+            ):
+                raise RuntimeError(f"ancillary identity mismatch: {path}")
+            inventory[relative_text] = entry
+        build_path = run_dir / "build_manifest.json"
+        if "build_manifest.json" not in inventory:
+            raise RuntimeError(f"build manifest is not completion-bound: {run_dir}")
+        payload = _read(build_path)
+        for experiment, value in payload.items():
+            if isinstance(value, dict):
+                builds.setdefault(str(experiment), []).append(value)
+        for relative in sorted(inventory):
+            if not relative.startswith("audits/") or not relative.endswith(".native-lb.json"):
+                continue
+            audit = _read(run_dir / relative)
+            experiment = str(audit.get("experiment_id", ""))
+            if not experiment or audit.get("passed") is not True:
+                raise RuntimeError(f"failed or unidentified LB audit: {relative}")
+            build = payload.get(experiment)
+            if not isinstance(build, dict) or (
+                audit.get("dataset_hash") != build.get("dataset_hash")
+                or audit.get("split_id") != build.get("split_id")
+            ):
+                raise RuntimeError(f"LB audit/build identity mismatch: {relative}")
+            audits.setdefault(experiment, []).append(audit)
+            continue
+        for relative in sorted(inventory):
+            if not relative.startswith("audits/") or not relative.endswith(".base-cache.json"):
+                continue
+            audit = _read(run_dir / relative)
+            experiment = str(audit.get("experiment_id", ""))
+            build = payload.get(experiment)
+            if not experiment or not isinstance(build, dict) or (
+                audit.get("dataset_hash") != build.get("dataset_hash")
+                or audit.get("split_id") != build.get("split_id")
+            ):
+                raise RuntimeError(f"Base-cache audit/build identity mismatch: {relative}")
+            cache_audits.setdefault(experiment, []).append(audit)
+
+        raw_inventory: list[dict[str, Any]] = []
+        for raw in accepted.get("raw_files", []):
+            if not isinstance(raw, dict) or not isinstance(raw.get("path"), str):
+                raise RuntimeError(f"malformed accepted raw inventory: {run_id}")
+            relative_text = str(raw["path"])
+            parsed = PurePosixPath(relative_text)
+            if (
+                "\\" in relative_text
+                or parsed.is_absolute()
+                or parsed.as_posix() != relative_text
+                or any(part in {"", ".", ".."} for part in parsed.parts)
+            ):
+                raise RuntimeError(f"unsafe accepted raw path: {relative_text}")
+            path = run_dir.joinpath(*parsed.parts)
+            try:
+                path.resolve(strict=True).relative_to(run_dir.resolve(strict=True))
+            except (FileNotFoundError, ValueError) as error:
+                raise RuntimeError(f"accepted raw path escapes run: {relative_text}") from error
+            if path.is_symlink() or not path.is_file() or file_sha256(path) != raw.get("sha256"):
+                raise RuntimeError(f"accepted raw identity mismatch: {path}")
+            raw_inventory.append({**raw, "bytes": path.stat().st_size})
+        bound_runs.append(
+            {
+                "run_id": run_id,
+                "run_dir": run_dir.relative_to(root).as_posix() or ".",
+                "completion_sha256": accepted["completion_sha256"],
+                "raw_files": raw_inventory,
+                "raw_inventory_sha256": object_sha256(raw_inventory),
+            }
+        )
+    if observed != set(expected):
+        raise RuntimeError(
+            "COMPLETED.json set differs from analyzer-accepted runs: "
+            f"missing={sorted(set(expected) - observed)}"
+        )
+    if not builds or not audits or not cache_audits:
+        raise RuntimeError("completed build/LB audit evidence is missing")
+    return builds, audits, cache_audits, sorted(bound_runs, key=lambda row: row["run_id"])
+
+
+def _positive_query_values(
+    rows: Sequence[Mapping[str, Any]], experiment: str, method: str, field: str
+) -> dict[tuple[str, str, str, int], float]:
+    values = _query_medians(rows, experiment, method, field)
+    if not values or any(not math.isfinite(value) or value <= 0 for value in values.values()):
+        raise RuntimeError(f"missing/invalid measured ablation: {experiment}/{method}/{field}")
+    return values
+
+
+def _paired_ablation(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    experiment: str,
+    before: str,
+    after: str,
+    field: str,
+) -> tuple[float, float, float]:
+    before_values = _positive_query_values(rows, experiment, before, field)
+    after_values = _positive_query_values(rows, experiment, after, field)
+    if set(before_values) != set(after_values):
+        raise RuntimeError(f"unpaired measured ablation: {before} -> {after}")
+    ratio = math.exp(
+        math.fsum(math.log(before_values[key] / after_values[key]) for key in before_values)
+        / len(before_values)
+    )
+    return (
+        statistics.median(before_values.values()) / 1e6,
+        statistics.median(after_values.values()) / 1e6,
+        ratio,
+    )
+
+
+def _quality_and_rechecks(
+    rows: Sequence[Mapping[str, Any]], experiment: str, method: str
+) -> tuple[float, float, float | None]:
+    selected = [
+        row
+        for row in rows
+        if row.get("experiment_id") == experiment and row.get("method") == method
+    ]
+    recalls = [
+        float(row["full_visible_exact_recall"])
+        for row in selected
+        if row.get("full_visible_exact_recall") is not None
+    ]
+    if not recalls or any(not math.isfinite(value) or not 0 <= value <= 1 for value in recalls):
+        raise RuntimeError(f"missing/invalid ablation quality: {experiment}/{method}")
+    rechecks = [
+        float(row["exact_boundary_rechecks"])
+        for row in selected
+        if row.get("exact_boundary_rechecks") is not None
+    ]
+    if any(not math.isfinite(value) or value < 0 for value in rechecks):
+        raise RuntimeError(f"invalid exact-recheck ablation: {experiment}/{method}")
+    return statistics.median(recalls), min(recalls), (
+        statistics.median(rechecks) if rechecks else None
+    )
+
+
+def _base_cache_metrics(
+    cache_audits: Mapping[str, Sequence[Mapping[str, Any]]], experiment: str
+) -> tuple[float, float, float]:
+    evidence = cache_audits.get(experiment)
+    if not evidence:
+        raise RuntimeError(f"missing Base-cache measured ablation: {experiment}")
+    cached: list[float] = []
+    legacy: list[float] = []
+    for audit_index, audit in enumerate(evidence):
+        rows = audit.get("rows")
+        count = audit.get("query_count")
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0 or not isinstance(rows, list):
+            raise RuntimeError(f"malformed Base-cache measured ablation: {experiment}")
+        pairs: dict[tuple[str, int], dict[str, Mapping[str, Any]]] = {}
+        for row in rows:
+            if not isinstance(row, dict) or row.get("mode") not in {"cached", "legacy_rebuild"}:
+                raise RuntimeError(f"malformed Base-cache row: {experiment}")
+            key = (str(row.get("query_id")), int(row.get("query_position", -1)))
+            mode = str(row["mode"])
+            if mode in pairs.setdefault(key, {}):
+                raise RuntimeError(f"duplicate Base-cache row: {experiment}/{audit_index}/{key}")
+            pairs[key][mode] = row
+        if len(pairs) != count:
+            raise RuntimeError(f"Base-cache query count differs from rows: {experiment}")
+        for key, pair in pairs.items():
+            if set(pair) != {"cached", "legacy_rebuild"}:
+                raise RuntimeError(f"unpaired Base-cache row: {experiment}/{key}")
+            if (
+                pair["cached"].get("candidate_hash") != pair["legacy_rebuild"].get("candidate_hash")
+                or pair["cached"].get("candidate_keys") != pair["legacy_rebuild"].get("candidate_keys")
+            ):
+                raise RuntimeError(f"Base-cache ablation changed frozen C: {experiment}/{key}")
+            cached_wall = float(pair["cached"].get("wall_ns", float("nan")))
+            legacy_wall = float(pair["legacy_rebuild"].get("wall_ns", float("nan")))
+            if not all(math.isfinite(value) and value > 0 for value in (cached_wall, legacy_wall)):
+                raise RuntimeError(f"invalid Base-cache latency: {experiment}/{key}")
+            cached.append(cached_wall)
+            legacy.append(legacy_wall)
+    return (
+        statistics.median(cached) / 1e6,
+        statistics.median(legacy) / 1e6,
+        math.exp(math.fsum(math.log(old / new) for old, new in zip(legacy, cached)) / len(cached)),
+    )
+
+
+def _ablation_table(
+    rows: Sequence[Mapping[str, Any]],
+    cache_audits: Mapping[str, Sequence[Mapping[str, Any]]],
+    profile: Mapping[str, Any],
+) -> list[str]:
+    experiment = "sift-initial"
+    p_before, p_after, p_ratio = _paired_ablation(
+        rows,
+        experiment=experiment,
+        before="ablation_P_beta0_rescan_adaptive",
+        after="native_P_beta0",
+        field="micro_latency_ns",
+    )
+    f_before, f_after, f_ratio = _paired_ablation(
+        rows,
+        experiment=experiment,
+        before="ablation_F_heap_all_exact",
+        after="native_F",
+        field="micro_latency_ns",
+    )
+    cached, legacy, cache_ratio = _base_cache_metrics(cache_audits, experiment)
+    old = profile.get("unprofiled_run", profile.get("matched_unprofiled_run"))
+    if not isinstance(old, dict):
+        raise RuntimeError("old P unprofiled ablation evidence is missing")
+    old_micro = float(old.get("old_pruning_beta0_micro_milliseconds", float("nan")))
+    old_e2e = float(old.get("old_pruning_beta0_e2e_milliseconds", float("nan")))
+    new_micro = statistics.median(
+        _positive_query_values(rows, experiment, "native_P_beta0", "micro_latency_ns").values()
+    ) / 1e6
+    new_api = statistics.median(
+        _positive_query_values(rows, experiment, "native_P_beta0", "api_wall_latency_ns").values()
+    ) / 1e6
+    if not all(math.isfinite(value) and value > 0 for value in (old_micro, old_e2e)):
+        raise RuntimeError("old P unprofiled measured latency is missing/invalid")
+    a_ref, a, a_ratio = _paired_ablation(
+        rows,
+        experiment=experiment,
+        before="faiss_A_reference",
+        after="faiss_A",
+        field="api_wall_latency_ns",
+    )
+    ref_recall, ref_recall_min, ref_rechecks = _quality_and_rechecks(
+        rows, experiment, "faiss_A_reference"
+    )
+    a_recall, a_recall_min, a_rechecks = _quality_and_rechecks(rows, experiment, "faiss_A")
+    ref_recheck_text = "0（非認証 float 順序、exact recheck なし）" if ref_rechecks is None else _fmt(ref_rechecks, 1)
+    if a_rechecks is None:
+        raise RuntimeError("faiss_A exact-recheck evidence is missing")
+    return [
+        f"| P rescan → heap | micro p50 ms | {_fmt(p_before)} | {_fmt(p_after)} | {_fmt(p_ratio)} | query-paired |",
+        f"| F all-exact → adaptive | micro p50 ms | {_fmt(f_before)} | {_fmt(f_after)} | {_fmt(f_ratio)} | query-paired |",
+        f"| Base cached → legacy rebuild | audit wall p50 ms | {_fmt(cached)} | {_fmt(legacy)} | {_fmt(1.0 / cache_ratio)} | query-paired; candidate hash/key identical |",
+        f"| old P → packed/native P | micro p50 ms | {_fmt(old_micro)} | {_fmt(new_micro)} | {_fmt(old_micro / new_micro)} | **nonpaired** development 5 queries vs validation queries; old E2E/new API={_fmt(old_e2e)}/{_fmt(new_api)} ms |",
+        f"| A-reference → A | API p50 ms | {_fmt(a_ref)} | {_fmt(a)} | {_fmt(a_ratio)} | query-paired; recall med/min {_fmt(ref_recall, 4)}/{_fmt(ref_recall_min, 4)} → {_fmt(a_recall, 4)}/{_fmt(a_recall_min, 4)}; exact rechecks {ref_recheck_text} → {_fmt(a_rechecks, 1)} |",
+    ]
+
+
+def _quality_table(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    chosen: dict[tuple[str, str, str, str, int], Mapping[str, Any]] = {}
+    for row in rows:
+        if row.get("method_role") not in {"F", "A", "A-reference", "P"}:
+            continue
+        key = (
+            str(row.get("experiment_id")),
+            str(row.get("method")),
+            str(row.get("run_id")),
+            str(row.get("session_id")),
+            int(row.get("query_position", -1)),
+        )
+        prior = chosen.get(key)
+        if prior is None or int(row.get("repetition", -1)) < int(
+            prior.get("repetition", -1)
+        ):
+            chosen[key] = row
+    grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for row in chosen.values():
+        grouped.setdefault(
+            (str(row["experiment_id"]), str(row["method"])), []
+        ).append(row)
+    output = []
+    for (experiment, method), values in sorted(grouped.items()):
+        matches = [
+            bool(row.get("same_c_order_match", row.get("baseline_quality_match")))
+            for row in values
+        ]
+        recalls = [float(row["full_visible_exact_recall"]) for row in values if row.get("full_visible_exact_recall") is not None]
+        captures = [float(row["delta_neighbor_capture"]) for row in values if row.get("delta_neighbor_capture") is not None]
+        observed = [float(row["observed_beta_upper_l2"]) for row in values if row.get("observed_beta_upper_l2") is not None]
+        certified = [float(row["certified_beta_l2"]) for row in values if row.get("certified_beta_l2") is not None]
+        requested = [float(row["requested_beta_l2"]) for row in values if row.get("requested_beta_l2") is not None]
+        output.append(
+            "| " + " | ".join(
+                (
+                    experiment,
+                    method,
+                    f"{sum(matches) / len(matches):.4f}" if matches else "—",
+                    f"{statistics.median(recalls):.4f}/{min(recalls):.4f}" if recalls else "—",
+                    f"{statistics.median(captures):.4f}/{min(captures):.4f} ({len(captures)})" if captures else "— (0)",
+                    (
+                        f"{max(observed):.6g}/{max(certified):.6g}/{max(requested):.6g}"
+                        if observed and certified and requested
+                        else "—"
+                    ),
+                )
+            ) + " |"
+        )
+    return output
+
+
+def _geometry_table(audits: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[str]:
+    output = []
+    for experiment, evidence_rows in sorted(audits.items()):
+        rows = [row for audit in evidence_rows for row in audit.get("rows", [])]
+        for action in ("scan", "skip"):
+            selected = [row for row in rows if row.get("action") == action]
+            if not selected:
+                continue
+            slack = [
+                max(0.0, float(row["exact_min_l2_lower"]) - float(row["lb_lower"]))
+                for row in selected
+            ]
+            radius = [float(row["radius_upper"]) for row in selected]
+            exact_min = [float(row["exact_min_l2_lower"]) for row in selected]
+            output.append(
+                "| " + " | ".join(
+                    (
+                        experiment,
+                        action,
+                        str(len(selected)),
+                        f"{statistics.median(radius):.6g}",
+                        f"{statistics.median(exact_min):.6g}",
+                        f"{statistics.median(slack):.6g}/{float(np.percentile(slack, 95)):.6g}",
+                    )
+                ) + " |"
+            )
+    return output
+
+
+def _break_even(
+    rows: Sequence[Mapping[str, Any]],
+    builds: Mapping[str, Sequence[Mapping[str, Any]]],
+    experiment: str,
+    f_method: str,
+    p_method: str,
+) -> dict[str, Any]:
+    f_values = _query_medians(rows, experiment, f_method, "api_wall_latency_ns")
+    p_values = _query_medians(rows, experiment, p_method, "api_wall_latency_ns")
+    keys = sorted(set(f_values).intersection(p_values))
+    saving_ns = (
+        None
+        if not keys
+        else float(statistics.median(f_values[key] - p_values[key] for key in keys))
+    )
+    build_rows = list(builds.get(experiment, ()))
+    build_costs = []
+    memory_costs = []
+    for build in build_rows:
+        groups = build.get("groups")
+        if not isinstance(groups, dict):
+            continue
+        build_costs.append(
+            sum(
+                int(groups.get(field, 0))
+                for field in (
+                    "center_training_ns",
+                    "assignment_ns",
+                    "packing_and_radius_ns",
+                )
+            )
+        )
+        memory_costs.append(
+            int(groups.get("member_bytes", 0)) + int(groups.get("metadata_bytes", 0))
+        )
+    build_ns = None if not build_costs else float(statistics.median(build_costs))
+    memory_bytes = None if not memory_costs else float(statistics.median(memory_costs))
+    finite = build_ns is not None and saving_ns is not None and saving_ns > 0.0
+    return {
+        "incremental_group_build_ns": build_ns,
+        "median_paired_query_saving_ns": saving_ns,
+        "q_break_even": (build_ns / saving_ns) if finite else None,
+        "finite": finite,
+        "group_memory_bytes": memory_bytes,
+    }
+
+
+def _rq_result_answers(
+    *,
+    gate: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+    builds: Mapping[str, Sequence[Mapping[str, Any]]],
+    audits: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> tuple[str, str, str]:
+    candidates = [
+        value
+        for value in gate.get("candidates", [])
+        if isinstance(value, dict) and value.get("real_non_degenerate") is True
+    ]
+
+    def role_result(role: str) -> tuple[int, str, int, int]:
+        passed = 0
+        comparisons: list[tuple[float, Mapping[str, Any], Mapping[str, Any]]] = []
+        mismatch_rows = 0
+        mismatch_queries = 0
+        for candidate in candidates:
+            outcomes = candidate.get("comparison_outcomes")
+            outcome = outcomes.get(role) if isinstance(outcomes, dict) else None
+            if not isinstance(outcome, dict):
+                continue
+            passed += int(outcome.get("passed") is True)
+            values = outcome.get("comparisons")
+            if not isinstance(values, list):
+                continue
+            for comparison in values:
+                if not isinstance(comparison, dict):
+                    continue
+                value = comparison.get("geometric_mean")
+                if value is None:
+                    continue
+                comparisons.append((float(value), candidate, comparison))
+                mismatch_rows += int(
+                    comparison.get("baseline_quality_mismatch_rows_retained", 0)
+                )
+                mismatch_queries += int(
+                    comparison.get("baseline_quality_mismatch_queries_retained", 0)
+                )
+        if not comparisons:
+            best = "eligible comparison なし"
+        else:
+            value, candidate, comparison = max(comparisons, key=lambda item: item[0])
+            best = (
+                f"最良 {role}/P={_fmt(value)} "
+                f"[CI {_fmt(comparison.get('bootstrap_95pct_lower'))}, "
+                f"{_fmt(comparison.get('bootstrap_95pct_upper'))}] "
+                f"(`{candidate.get('experiment_id')}` / "
+                f"`{candidate.get('proposed_method')}`)"
+            )
+        return passed, best, mismatch_rows, mismatch_queries
+
+    f_passed, f_best, _, _ = role_result("F")
+    a_passed, a_best, mismatch_rows, mismatch_queries = role_result("A")
+    eligible_count = len(candidates)
+    validation_conclusion = (
+        "validation gate は `PASSED` し fresh final を許可した。"
+        if gate.get("gate_status") == "PASSED"
+        else "validation gate は `NOT_PASSED` で fresh final を許可しなかった。"
+    )
+    rq1 = (
+        f"eligible real/non-degenerate 候補 {eligible_count} 件中、F/P criterion を"
+        f"通過した候補は {f_passed} 件。{f_best}。{validation_conclusion}"
+    )
+    rq2 = (
+        f"同じ {eligible_count} 候補中、A/P timing+quality criterion を通過した候補は "
+        f"{a_passed} 件。{a_best}。A mismatch は {mismatch_rows} rows / "
+        f"{mismatch_queries} queries（timing から除外せず保持）。"
+    )
+
+    n_over_p_values: list[float] = []
+    for experiment, roles in summary.get("methods_by_experiment", {}).items():
+        for p_method in roles.get("P", []):
+            value = _n_over_p(rows, str(experiment), str(p_method))
+            if value is not None and math.isfinite(value):
+                n_over_p_values.append(value)
+    skip_fractions: list[float] = []
+    for row in rows:
+        if row.get("method_role") != "P":
+            continue
+        receipt = row.get("receipt")
+        if not isinstance(receipt, dict):
+            continue
+        skipped = int(receipt.get("groups_skipped", 0))
+        scanned = int(receipt.get("groups_scanned", 0))
+        if skipped + scanned > 0:
+            skip_fractions.append(skipped / (skipped + scanned))
+    geometry_gaps = [
+        float(item["exact_min_l2_lower"]) - float(item["lb_lower"])
+        for values in audits.values()
+        for audit in values
+        for item in audit.get("rows", [])
+        if isinstance(item, dict)
+        and item.get("exact_min_l2_lower") is not None
+        and item.get("lb_lower") is not None
+    ]
+    build_costs = [
+        float(groups.get("center_training_ns", 0))
+        + float(groups.get("assignment_ns", 0))
+        + float(groups.get("packing_and_radius_ns", 0))
+        for values in builds.values()
+        for build in values
+        if isinstance(build.get("groups"), dict)
+        for groups in (build["groups"],)
+    ]
+    finite_break_even = 0
+    break_even_total = 0
+    for experiment, roles in summary.get("methods_by_experiment", {}).items():
+        f_methods = roles.get("F", [])
+        if not f_methods:
+            continue
+        for p_method in roles.get("P", []):
+            result = _break_even(
+                rows, builds, str(experiment), str(f_methods[0]), str(p_method)
+            )
+            break_even_total += 1
+            finite_break_even += int(bool(result["finite"]))
+    rq3 = (
+        f"N/P median={_fmt(None if not n_over_p_values else statistics.median(n_over_p_values))}、"
+        f"P group-skip fraction median={_fmt(None if not skip_fractions else statistics.median(skip_fractions))}、"
+        f"exact-min−LB gap median/p95={_fmt(None if not geometry_gaps else statistics.median(geometry_gaps))}/"
+        f"{_fmt(None if not geometry_gaps else float(np.percentile(geometry_gaps, 95)))} L2。"
+        f"incremental group build median={_fmt(None if not build_costs else statistics.median(build_costs) / 1e6)} ms、"
+        f"有限 break-even は {finite_break_even}/{break_even_total} operating points。"
+        "これは保存 evidence の記述的対応であり、単独では勝敗原因を因果確定しない。"
+    )
+    return rq1, rq2, rq3
+
+
+def _final_session_lines(final_summary: Mapping[str, Any]) -> list[str]:
+    metrics = final_summary.get("primary_session_metrics")
+    fresh = final_summary.get("fresh_primary")
+    if not isinstance(metrics, list) or not isinstance(fresh, dict):
+        raise RuntimeError("completed final is missing primary per-seed metrics")
+    try:
+        by_seed = {int(row["session_seed"]): row for row in metrics if isinstance(row, dict)}
+    except (KeyError, TypeError, ValueError) as error:
+        raise RuntimeError("completed final has malformed primary per-seed metrics") from error
+    if len(metrics) != 3 or set(by_seed) != {0, 1, 2}:
+        raise RuntimeError("completed final primary per-seed metrics are not exactly 0/1/2")
+    proposed = str(fresh.get("proposed_method", ""))
+    output: list[str] = []
+    for seed in (0, 1, 2):
+        row = by_seed[seed]
+        methods = row.get("methods")
+        if (
+            row.get("session_id") != f"session-seed-{seed}:process-0000"
+            or int(row.get("query_count", -1)) != 1000
+            or not isinstance(methods, dict)
+            or set(methods) != {"F", "A", "P"}
+            or methods.get("P") != proposed
+            or not all(isinstance(methods.get(role), str) and methods.get(role) for role in ("F", "A"))
+        ):
+            raise RuntimeError("completed final primary per-seed identity is inconsistent")
+        values: dict[str, float] = {}
+        try:
+            for role in ("F", "A", "P"):
+                role_metrics = row[role]
+                values[f"{role}50"] = float(role_metrics["api_wall_p50_ns"])
+                values[f"{role}95"] = float(role_metrics["api_wall_p95_ns"])
+            values["F/P"] = float(row["F_over_P_geomean"])
+            values["A/P"] = float(row["A_over_P_geomean"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError("completed final primary per-seed metrics are malformed") from error
+        if any(not math.isfinite(value) or value <= 0 for value in values.values()):
+            raise RuntimeError("completed final primary per-seed metrics are non-positive/non-finite")
+        output.append(
+            f"| {seed} | {_fmt(values['F50'] / 1e6)}/{_fmt(values['F95'] / 1e6)} | "
+            f"{_fmt(values['A50'] / 1e6)}/{_fmt(values['A95'] / 1e6)} | "
+            f"{_fmt(values['P50'] / 1e6)}/{_fmt(values['P95'] / 1e6)} | "
+            f"{_fmt(values['F/P'])} | {_fmt(values['A/P'])} |"
+        )
+    return output
+
+
+def _final_evidence(
+    *,
+    decision_path: Path,
+    summary_path: Path,
+    gate_path: Path,
+    lock_path: Path,
+    config_path: Path,
+    pre_hnsw_authorization_path: Path,
+    hnsw_path: Path,
+    validation_summary_path: Path,
+    validation_gate_path: Path,
+) -> tuple[dict[str, Any], str]:
+    """Verify optional large-final state and render its compact report section."""
+
+    decision = _read(decision_path)
+    validation_gate = _read(validation_gate_path)
+    if decision.get("study_id") != "issue-3-native-recheck":
+        raise RuntimeError("final decision study identity mismatch")
+    if (
+        decision.get("gate_sha256") != file_sha256(validation_gate_path)
+        or decision.get("validation_summary_sha256")
+        != file_sha256(validation_summary_path)
+    ):
+        raise RuntimeError("final decision is not bound to this validation evidence")
+    status = str(decision.get("final_status", ""))
+    if status == "NOT_RUN_GATE_NOT_PASSED":
+        if (
+            decision.get("validation_gate_status") != "NOT_PASSED"
+            or validation_gate.get("gate_status") != "NOT_PASSED"
+            or decision.get("performance_gate_status")
+            != "NOT_RUN_GATE_NOT_PASSED"
+            or decision.get("performance_verdict")
+            != "NOT_SUPPORTED_IN_TESTED_REGIME"
+            or decision.get("verdict") != "NOT_SUPPORTED_IN_TESTED_REGIME"
+            or decision.get("engineering_decision") != "NO_GO"
+            or decision.get("lock_created") is not False
+            or decision.get("large_final_started") is not False
+            or decision.get("fresh_sift_holdout_loaded") is not False
+            or lock_path.exists()
+            or config_path.exists()
+            or summary_path.exists()
+            or gate_path.exists()
+            or pre_hnsw_authorization_path.exists()
+            or hnsw_path.exists()
+        ):
+            raise RuntimeError("negative final decision violates the no-lock/no-load policy")
+        return decision, (
+            "## Fresh final\n\n"
+            "Validation は `NOT_PASSED` で終了した。final lock/config は作成せず、"
+            "SIFT fresh query 1200..2199 と final-only HNSW reference は読み込んでいない。"
+            "工学的導入判定は `NO_GO` である。"
+        )
+    if status not in {
+        "AUTHORIZED_NOT_YET_RUN",
+        "COMPLETED_PASSED",
+        "COMPLETED_NOT_PASSED",
+    }:
+        raise RuntimeError(f"unknown final decision status: {status}")
+    if (
+        decision.get("validation_gate_status") != "PASSED"
+        or validation_gate.get("gate_status") != "PASSED"
+        or decision.get("final_lock_sha256") != file_sha256(lock_path)
+        or decision.get("final_config_file_sha256") != file_sha256(config_path)
+    ):
+        raise RuntimeError("authorized final lock/config identity mismatch")
+    if status == "AUTHORIZED_NOT_YET_RUN":
+        if (
+            decision.get("verdict") != "INCONCLUSIVE"
+            or decision.get("performance_verdict") != "INCONCLUSIVE"
+            or decision.get("performance_gate_status") != "NOT_RUN"
+            or decision.get("engineering_decision") != "NO_GO"
+            or decision.get("lock_created") is not True
+            or decision.get("large_final_started") is not False
+            or decision.get("fresh_sift_holdout_loaded") is not False
+            or summary_path.exists()
+            or gate_path.exists()
+            or pre_hnsw_authorization_path.exists()
+            or hnsw_path.exists()
+        ):
+            raise RuntimeError("pending final decision violates the pre-final policy")
+        return decision, (
+            "## Fresh final\n\n"
+            "Validation は `PASSED` し設定を lock 済みだが、3 process session の fresh "
+            "final は未完了である。この時点の verdict は `INCONCLUSIVE`、工学的導入判定は"
+            "未確定のため `NO_GO` とする。"
+        )
+
+    final_summary = _read(summary_path)
+    final_gate = _read(gate_path)
+    expected_gate_state = {
+        "COMPLETED_PASSED": (
+            "PASSED",
+            True,
+            "SUPPORTED_IN_TESTED_REGIME",
+        ),
+        "COMPLETED_NOT_PASSED": (
+            "NOT_PASSED",
+            False,
+            "NOT_SUPPORTED_IN_TESTED_REGIME",
+        ),
+    }[status]
+    expected_hnsw_status = (
+        "completed"
+        if status == "COMPLETED_PASSED"
+        else "not_run_performance_gate_not_passed"
+    )
+    if status == "COMPLETED_PASSED":
+        hnsw_identity_ok = (
+            isinstance(decision.get("hnsw_completion_sha256"), str)
+            and final_gate.get("hnsw_completion_sha256")
+            == decision.get("hnsw_completion_sha256")
+            and pre_hnsw_authorization_path.is_file()
+            and decision.get("pre_hnsw_authorization_sha256")
+            == file_sha256(pre_hnsw_authorization_path)
+            and final_gate.get("pre_hnsw_authorization_sha256")
+            == decision.get("pre_hnsw_authorization_sha256")
+            and hnsw_path.is_dir()
+        )
+    else:
+        hnsw_identity_ok = (
+            "hnsw_completion_sha256" not in decision
+            and "hnsw_completion_sha256" not in final_gate
+            and "pre_hnsw_authorization_sha256" not in decision
+            and "pre_hnsw_authorization_sha256" not in final_gate
+            and not pre_hnsw_authorization_path.exists()
+            and not hnsw_path.exists()
+        )
+    if (
+        decision.get("final_summary_sha256") != file_sha256(summary_path)
+        or decision.get("final_gate_sha256") != file_sha256(gate_path)
+        or final_summary.get("study_id") != "issue-3-native-recheck"
+        or final_summary.get("evidence_role") != "final"
+        or final_gate.get("study_id") != "issue-3-native-recheck"
+        or final_summary.get("final_gate") != final_gate
+        or final_gate.get("verdict") != decision.get("verdict")
+        or final_gate.get("performance_verdict")
+        != decision.get("performance_verdict")
+        or final_gate.get("performance_gate_status")
+        != decision.get("performance_gate_status")
+        or final_gate.get("engineering_decision")
+        != decision.get("engineering_decision")
+        or (
+            final_gate.get("gate_status"),
+            final_gate.get("passed"),
+            final_gate.get("verdict"),
+        )
+        != expected_gate_state
+        or final_gate.get("performance_gate_status") != expected_gate_state[0]
+        or final_gate.get("performance_verdict") != expected_gate_state[2]
+        or final_gate.get("engineering_decision") not in {"GO", "NO_GO"}
+        or decision.get("lock_created") is not True
+        or decision.get("large_final_started") is not True
+        or decision.get("fresh_sift_holdout_loaded") is not True
+        or final_summary.get("final_lock_sha256")
+        != decision.get("final_lock_sha256")
+        or final_summary.get("final_config_file_sha256")
+        != decision.get("final_config_file_sha256")
+        or final_summary.get("final_config_object_sha256")
+        != decision.get("final_config_object_sha256")
+        or final_summary.get("validation_gate_sha256")
+        != decision.get("gate_sha256")
+        or final_summary.get("validation_summary_sha256")
+        != decision.get("validation_summary_sha256")
+        or final_gate.get("final_lock_sha256")
+        != decision.get("final_lock_sha256")
+        or final_gate.get("final_config_file_sha256")
+        != decision.get("final_config_file_sha256")
+        or final_gate.get("hnsw_reference_status") != expected_hnsw_status
+        or decision.get("hnsw_reference_status") != expected_hnsw_status
+        or not hnsw_identity_ok
+        or final_gate.get("gist_used_in_gate") is not False
+        or final_gate.get("hnsw_references_used_in_gate") is not False
+        or final_gate.get("fresh_query_interval") != [1200, 2200]
+        or final_gate.get("process_session_seeds") != [0, 1, 2]
+    ):
+        raise RuntimeError("completed final summary/gate identity mismatch")
+    fresh = final_summary.get("fresh_primary")
+    sessions = final_summary.get("sessions")
+    gist = final_summary.get("gist_interpretation")
+    hnsw = final_summary.get("hnsw_references")
+    if (
+        not isinstance(fresh, dict)
+        or fresh.get("query_interval") != [1200, 2200]
+        or fresh.get("independence_label") != "fresh_pre_registered_holdout"
+        or not isinstance(sessions, list)
+        or sorted(int(row["session_seed"]) for row in sessions) != [0, 1, 2]
+        or not isinstance(gist, dict)
+        or gist.get("independence_label") != "reused_non_independent"
+        or gist.get("gate_eligible") is not False
+        or not isinstance(hnsw, dict)
+        or hnsw.get("status") != expected_hnsw_status
+        or hnsw.get("role") != "approximate_reference_only_not_in_final_gate"
+        or (
+            status == "COMPLETED_PASSED"
+            and hnsw.get("completion_sha256")
+            != decision.get("hnsw_completion_sha256")
+        )
+        or (
+            status == "COMPLETED_PASSED"
+            and hnsw.get("pre_hnsw_authorization_sha256")
+            != decision.get("pre_hnsw_authorization_sha256")
+        )
+        or (
+            status == "COMPLETED_NOT_PASSED"
+            and (
+                "completion_sha256" in hnsw
+                or "pre_hnsw_authorization_sha256" in hnsw
+            )
+        )
+    ):
+        raise RuntimeError("completed final scope/independence identity mismatch")
+    session_lines = _final_session_lines(final_summary)
+    outcomes = final_gate.get("comparison_outcomes")
+    if not isinstance(outcomes, dict) or set(outcomes) != {"F", "A"}:
+        raise RuntimeError("completed final has no F/A outcomes")
+    influence = final_gate.get("fresh_delta_influence")
+    if not isinstance(influence, dict):
+        raise RuntimeError("completed final has no Delta-influence evidence")
+    for role in ("F", "A"):
+        outcome = outcomes[role]
+        try:
+            ci_lower = float(outcome["bootstrap_95pct_lower"])
+            ci_threshold = float(
+                outcome["bootstrap_95pct_lower_must_be_strictly_above"]
+            )
+            speedup = float(outcome["geometric_mean_speedup"])
+            minimum_speedup = float(outcome["minimum_required_speedup"])
+            p95_ratio = float(outcome["P_over_baseline_p95_ratio"])
+            maximum_p95_ratio = float(outcome["maximum_allowed_p95_ratio"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError("completed final has malformed performance metrics") from error
+        if not all(
+            math.isfinite(value)
+            for value in (
+                ci_lower,
+                ci_threshold,
+                speedup,
+                minimum_speedup,
+                p95_ratio,
+                maximum_p95_ratio,
+            )
+        ):
+            raise RuntimeError("completed final has non-finite performance metrics")
+        ci_passed = ci_lower > ci_threshold
+        quality_passed = role == "F" or outcome.get("A_quality_match") is True
+        expected_performance = (
+            outcome.get("complete_query_session_pairs") is True
+            and ci_passed
+            and quality_passed
+        )
+        expected_engineering = (
+            expected_performance
+            and speedup >= minimum_speedup
+            and p95_ratio <= maximum_p95_ratio
+        )
+        if (
+            ci_threshold != 1.0
+            or outcome.get("bootstrap_CI_supports_speedup") is not ci_passed
+            or outcome.get("performance_gate_passed") is not expected_performance
+            or outcome.get("engineering_GO_passed") is not expected_engineering
+        ):
+            raise RuntimeError("completed final performance metric decision is inconsistent")
+    performance_passed = all(
+        row.get("performance_gate_passed") is True for row in outcomes.values()
+    )
+    engineering_go = (
+        performance_passed
+        and all(row.get("engineering_GO_passed") is True for row in outcomes.values())
+        and influence.get("evidence_complete") is True
+        and final_gate.get("build_cost_evidence_complete") is True
+    )
+    expected_engineering_reasons: list[str] = []
+    for role in ("F", "A"):
+        outcome = outcomes[role]
+        if outcome.get("performance_gate_passed") is not True:
+            expected_engineering_reasons.append(f"performance_gate_failed_vs_{role}")
+        elif outcome.get("engineering_GO_passed") is not True:
+            expected_engineering_reasons.append(
+                f"speedup_or_p95_requirement_failed_vs_{role}"
+            )
+    if influence.get("evidence_complete") is not True:
+        expected_engineering_reasons.append("fresh_delta_influence_subset_missing")
+    if final_gate.get("build_cost_evidence_complete") is not True:
+        expected_engineering_reasons.append("build_cost_evidence_missing")
+    if (
+        performance_passed is not bool(final_gate["passed"])
+        or ("GO" if engineering_go else "NO_GO")
+        != final_gate["engineering_decision"]
+        or final_gate.get("engineering_reasons") != expected_engineering_reasons
+        or int(influence.get("labelled_queries", -1)) != 1000
+        or int(influence.get("required_minimum", -1)) < 1
+        or int(influence.get("influenced_queries", -1))
+        < int(influence.get("required_minimum", -1))
+    ):
+        raise RuntimeError("completed performance/engineering decision is inconsistent")
+    comparison_lines = []
+    for role in ("F", "A"):
+        row = outcomes[role]
+        comparison_lines.append(
+            "| " + " | ".join(
+                (
+                    role,
+                    _fmt(row.get("geometric_mean_speedup")),
+                    _fmt(row.get("P_query_folded_p95_ns") / 1e6),
+                    _fmt(row.get("baseline_query_folded_p95_ns") / 1e6),
+                    _fmt(row.get("P_over_baseline_p95_ratio")),
+                    "PASS" if row.get("performance_gate_passed") else "FAIL",
+                    "GO" if row.get("engineering_GO_passed") else "NO_GO",
+                )
+            ) + " |"
+        )
+    engineering_decision = str(final_gate["engineering_decision"])
+    engineering_reasons = final_gate["engineering_reasons"]
+    reasons_text = (
+        "なし" if not engineering_reasons else ", ".join(map(str, engineering_reasons))
+    )
+    hnsw_text = (
+        "Base+Delta HNSW と全体 HNSW（efSearch 128/512）も実行したが、非認証参考値であり gate 非対象である。"
+        if expected_hnsw_status == "completed"
+        else "performance gate が通らなかったため、final-only HNSW reference は実行していない。"
+    )
+    return decision, f"""## Fresh final
+
+SIFT query 1200..2199（事前登録 fresh 1,000件）を primary とし、process/group-build/method-order seed 0/1/2 の3 sessionを query 単位で fold した。GIST 0..999 は `reused_non_independent` の補助 anchor であり gate には使っていない。{hnsw_text}
+
+科学的 performance verdict は `{final_gate['performance_verdict']}`、工学的導入判定は **`{engineering_decision}`**（理由: {reasons_text}）である。`SUPPORTED_IN_TESTED_REGIME` と `NO_GO` は両立し得る。前者は F/A 両比較の bootstrap CI 下端が 1 を上回ること、後者はさらに geomean 1.10、p95 比 1.05、Delta-influence subset、build-cost evidence を要求する。
+
+| baseline | baseline/P geomean | P p95 ms | baseline p95 ms | P/baseline p95 | performance | engineering |
+|---|---:|---:|---:|---:|---|---|
+{chr(10).join(comparison_lines)}
+
+session 間 fold 前の primary F/A/P 実測変動（各 seed 内は query/repetition median、speedup は query-paired geomean）:
+
+| seed | F p50/p95 ms | A p50/p95 ms | P p50/p95 ms | F/P geomean | A/P geomean |
+|---:|---:|---:|---:|---:|---:|
+{chr(10).join(session_lines)}
+
+Fresh-final performance gate: **`{final_gate['performance_gate_status']}`**、verdict: **`{decision['verdict']}`**、engineering: **`{engineering_decision}`**。
+"""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--summary", required=True, type=Path)
+    parser.add_argument("--gate", required=True, type=Path)
+    parser.add_argument("--correctness", required=True, type=Path)
+    parser.add_argument("--profile", required=True, type=Path)
+    parser.add_argument("--representative-raw", required=True, type=Path)
+    parser.add_argument("--final-decision", required=True, type=Path)
+    parser.add_argument("--final-summary", required=True, type=Path)
+    parser.add_argument("--final-gate", required=True, type=Path)
+    parser.add_argument("--final-lock", required=True, type=Path)
+    parser.add_argument("--final-config", required=True, type=Path)
+    parser.add_argument("--pre-hnsw-authorization", required=True, type=Path)
+    parser.add_argument("--final-hnsw", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args()
+
+    evidence = load_native_evidence(args.input)
+    summary = _read(args.summary)
+    gate = _read(args.gate)
+    correctness = _read(args.correctness)
+    profile = _read(args.profile)
+    representative = _read(args.representative_raw)
+    final_decision, final_section = _final_evidence(
+        decision_path=args.final_decision,
+        summary_path=args.final_summary,
+        gate_path=args.final_gate,
+        lock_path=args.final_lock,
+        config_path=args.final_config,
+        pre_hnsw_authorization_path=args.pre_hnsw_authorization,
+        hnsw_path=args.final_hnsw,
+        validation_summary_path=args.summary,
+        validation_gate_path=args.gate,
+    )
+    rows = list(evidence.rows)
+    comparisons = _comparison_lookup(summary)
+    methods_by_experiment = summary["methods_by_experiment"]
+    for payload, label in (
+        (summary, "summary"),
+        (gate, "gate"),
+        (correctness, "correctness"),
+        (representative, "representative raw"),
+    ):
+        if payload.get("study_id") != "issue-3-native-recheck":
+            raise RuntimeError(f"{label} study identity mismatch")
+    if summary.get("validation_gate") != gate:
+        raise RuntimeError("gate differs from the decision embedded in summary")
+    if representative.get("source_summary_sha256") != file_sha256(args.summary):
+        raise RuntimeError("representative raw is not bound to this summary")
+    if representative.get("source_gate_sha256") != file_sha256(args.gate):
+        raise RuntimeError("representative raw is not bound to this gate")
+    if representative.get("source_runs") != list(evidence.runs):
+        raise RuntimeError("representative raw run identities differ from input evidence")
+    if summary.get("runs") != list(evidence.runs):
+        raise RuntimeError("summary run identities differ from input evidence")
+    implementation_hashes = summary.get("source_integrity", {}).get(
+        "implementation_tree_sha256", []
+    )
+    if implementation_hashes != [correctness.get("implementation_tree_sha256")]:
+        raise RuntimeError("correctness and validation implementation identities differ")
+    binary_hashes = summary.get("integrity_checks", {}).get(
+        "native_backend_calls", {}
+    ).get("native_binary_sha256", [])
+    if binary_hashes != [correctness.get("native_shared_object_sha256")]:
+        raise RuntimeError("correctness and validation native binary identities differ")
+    repository_root = Path(__file__).resolve().parents[1]
+    current_implementation_hash = implementation_tree_sha256(repository_root)
+    current_native_hash = str(native_build_info().get("shared_object_sha256", ""))
+    if correctness.get("implementation_tree_sha256") != current_implementation_hash:
+        raise RuntimeError("current implementation differs from correctness evidence")
+    if correctness.get("native_shared_object_sha256") != current_native_hash:
+        raise RuntimeError("current native binary differs from correctness evidence")
+    if implementation_hashes != [current_implementation_hash] or binary_hashes != [current_native_hash]:
+        raise RuntimeError("current runtime differs from validation source identity")
+    if final_decision.get("final_status") != "NOT_RUN_GATE_NOT_PASSED":
+        final_lock = _read(args.final_lock)
+        if (
+            final_lock.get("implementation_tree_sha256") != current_implementation_hash
+            or final_lock.get("native_shared_object_sha256") != current_native_hash
+            or final_lock.get("implementation_tree_sha256")
+            != correctness.get("implementation_tree_sha256")
+            or final_lock.get("native_shared_object_sha256")
+            != correctness.get("native_shared_object_sha256")
+        ):
+            raise RuntimeError("final lock differs from current/correctness runtime identity")
+    if profile.get("issue") != 3 or not profile.get("profiled_implementation_tree_sha256"):
+        raise RuntimeError("old-path profile identity is incomplete")
+    required_experiments = {
+        "sift-initial", "gist-initial", "sift-delta-0", "sift-delta-1000",
+        "sift-delta-100000", "sift-groups-64", "sift-groups-512",
+        "sift-k-1", "sift-k-100", "synthetic-clustered",
+        "synthetic-high-dimensional-isotropic", "synthetic-delta-near-queries",
+        "synthetic-outlier-radius",
+    }
+    missing_experiments = required_experiments - set(methods_by_experiment)
+    if missing_experiments:
+        raise RuntimeError(
+            f"report refuses an incomplete validation matrix: {sorted(missing_experiments)}"
+        )
+    builds, audits, cache_audits, bound_runs = _completed_artifacts(
+        args.input, evidence.runs
+    )
+    ablation_rows = _ablation_table(rows, cache_audits, profile)
+    quality_rows = _quality_table(rows)
+    geometry_rows = _geometry_table(audits)
+    rq1_answer, rq2_answer, rq3_answer = _rq_result_answers(
+        gate=gate,
+        summary=summary,
+        rows=rows,
+        builds=builds,
+        audits=audits,
+    )
+
+    table: list[str] = []
+    break_even_rows: list[str] = []
+    for experiment, roles in sorted(methods_by_experiment.items()):
+        f_method = roles.get("F", [None])[0]
+        a_method = roles.get("A", [None])[0]
+        p_methods = roles.get("P", [])
+        for p_method in p_methods:
+            p_rows = [
+                row for row in rows
+                if row.get("experiment_id") == experiment and row.get("method") == p_method
+            ]
+            beta = float(p_rows[0]["requested_beta_l2"]) if p_rows else None
+            p50, p95, p99 = _percentiles(
+                list(_query_medians(rows, experiment, p_method, "api_wall_latency_ns").values())
+            )
+            f_cmp = comparisons.get((experiment, p_method, "F"), {})
+            a_cmp = comparisons.get((experiment, p_method, "A"), {})
+            skipped = _component_median(rows, experiment, p_method, "groups_skipped")
+            scanned = _component_median(rows, experiment, p_method, "vectors_scanned")
+            table.append(
+                "| " + " | ".join(
+                    (
+                        experiment,
+                        p_method,
+                        _fmt(beta, 6),
+                        f"{_fmt(p50)}/{_fmt(p95)}/{_fmt(p99)}",
+                        f"{_fmt(f_cmp.get('geometric_mean'))} [{_fmt(f_cmp.get('bootstrap_95pct_lower'))}, {_fmt(f_cmp.get('bootstrap_95pct_upper'))}]",
+                        f"{_fmt(a_cmp.get('geometric_mean'))} [{_fmt(a_cmp.get('bootstrap_95pct_lower'))}, {_fmt(a_cmp.get('bootstrap_95pct_upper'))}]",
+                        _fmt(_n_over_p(rows, experiment, p_method)),
+                        f"{_fmt(skipped, 1)} / {_fmt(scanned, 1)}",
+                    )
+                ) + " |"
+            )
+            if f_method is not None:
+                amortization = _break_even(
+                    rows, builds, experiment, str(f_method), p_method
+                )
+                q_text = (
+                    _fmt(amortization["q_break_even"], 1)
+                    if amortization["finite"]
+                    else "有限解なし"
+                )
+                break_even_rows.append(
+                    "| " + " | ".join(
+                        (
+                            experiment,
+                            p_method,
+                            _fmt(
+                                None
+                                if amortization["incremental_group_build_ns"] is None
+                                else amortization["incremental_group_build_ns"] / 1e6,
+                                3,
+                            ),
+                            _fmt(
+                                None
+                                if amortization["median_paired_query_saving_ns"] is None
+                                else amortization["median_paired_query_saving_ns"] / 1e6,
+                                6,
+                            ),
+                            q_text,
+                            _fmt(amortization["group_memory_bytes"], 0),
+                        )
+                    ) + " |"
+                )
+
+    main_rows = [row for row in table if row.startswith("| sift-initial |")] or table[:1]
+    gate_status = str(gate["gate_status"])
+    requirements = gate.get("requirements", {})
+    integrity_complete = all(
+        bool(requirements.get(name, {}).get("passed"))
+        for name in ("native_backend_calls", "correctness")
+    ) and bool(
+        requirements.get("validation_evidence_source", {}).get(
+            "validation_gate_source_passed"
+        )
+    )
+    verdict = str(final_decision["verdict"])
+    engineering_decision = str(final_decision["engineering_decision"])
+    final_status = str(final_decision["final_status"])
+    if final_status == "NOT_RUN_GATE_NOT_PASSED":
+        final_statement = (
+            "validation gate は通過しなかったため、規定どおり大規模 final holdout は実行していない。"
+        )
+    elif final_status == "AUTHORIZED_NOT_YET_RUN":
+        final_statement = (
+            "validation gate は通過したが、lock 済み fresh holdout 評価はまだ完了していない。"
+        )
+    else:
+        final_statement = (
+            f"lock 済み fresh holdout 評価は `{final_status}` として完了した。"
+        )
+    profile_run = profile.get("unprofiled_run", profile.get("matched_unprofiled_run", {}))
+    profile_note = json.dumps(profile_run, ensure_ascii=False, sort_keys=True)
+    binary = correctness.get("native_build", {})
+    run_lines = [
+        f"| `{run['run_id']}` | `{run['config_hash']}` | `{run['implementation_tree_sha256']}` |"
+        for run in evidence.runs
+    ]
+    raw_inventory_lines = [
+        "| " + " | ".join(
+            (
+                f"`{run['run_id']}`",
+                f"`{run['run_dir']}/raw`",
+                str(len(run["raw_files"])),
+                str(sum(int(item["rows"]) for item in run["raw_files"])),
+                str(sum(int(item["bytes"]) for item in run["raw_files"])),
+                f"`{run['raw_inventory_sha256']}`",
+                f"`{run['completion_sha256']}`",
+            )
+        ) + " |"
+        for run in bound_runs
+    ]
+    content = f"""# Native kernel 再検証報告（Issue #3）
+
+最終 verdict: **`{verdict}`**、工学的導入判定: **`{engineering_decision}`**（validation gate: **{gate_status}**）。{final_statement}
+
+本報告は [GitHub Issue #3](https://github.com/wasanemon/Searchability-Obligations/issues/3) の手順に従い、旧 Python 実装の遅さと center-radius pruning 自体の限界を分離して再検証した結果である。ordinary L2 と Faiss の squared-L2 を区別し、全 native 保証経路は [`docs/native_numerics.md`](../docs/native_numerics.md) の interval/error-bound と厳密境界順序を用いた。
+
+## 結論（RQ1 / RQ2 / RQ3）
+
+- **RQ1（P 対 F、同一保証）**: {rq1_answer} P と F は同じ frozen `C`・同じ保証で、`F/P` paired API wall が直接比較である。
+- **RQ2（P 対 A、practical comparator）**: {rq2_answer} A は optimized Faiss Delta Flat + small exact rerank だが、rerank は返却 shortlist 内だけで全 Delta に対する保証ではない。
+- **RQ3（勝敗理由）**: {rq3_answer} skip/read、N/P、ablation、Base cache、build・memory・限定的 break-even を併記して解釈する。
+
+## 正しさ gate
+
+- fixed-seed native cases: {correctness.get('fixed_seed_cases')}。
+- pytest: {correctness.get('pytest_testcases')} passed、failures {correctness.get('pytest_failures')}、errors {correctness.get('pytest_errors')}、skipped {correctness.get('pytest_skipped')}。
+- native backend: `{binary.get('backend')}`、shared object SHA-256 `{correctness.get('native_shared_object_sha256')}`。
+- compile flags: `{binary.get('compile_flags')}`。fast-math 無効、FE_TONEAREST 強制、strict `LB > tau-beta`、曖昧境界だけ exact Fraction で再順位付けした。
+- raw native 行の backend/call evidence と beta chain の aggregate failure はそれぞれ {summary['integrity_checks']['native_backend_calls']['failure_count']} / {summary['integrity_checks']['correctness']['failure_count']}。
+
+## Validation 結果
+
+latency は API wall。各 session/query 内で repetition median、session 間で比の幾何平均、query を独立単位として固定 seed の paired bootstrap（{summary['bootstrap_policy']['resamples']} resamples）を用いた。speedup は baseline/P なので 1 より大きいほど P が速い。A の品質不一致行も timing から除外していない。
+
+| condition | P method | beta (L2) | P p50/p95/p99 ms | F/P geomean [95% CI] | A/P geomean [95% CI] | N/P geomean | median skipped groups / vectors scanned |
+|---|---|---:|---:|---:|---:|---:|---:|
+{chr(10).join(table)}
+
+主要条件の要約:
+
+{chr(10).join(main_rows)}
+
+Delta-influence subset は各 comparison の `delta_influence_subset` に同じ query 単位で保存した。A mismatch は `baseline_quality_mismatch_*_retained` と raw `baseline_validation_failure` に残した。
+
+`faiss_A_reference` は Faiss の squared-L2 順序を直接使う**非認証**の参考経路であり、RQ2 の A や gate には採用していない。その行は raw と代表 raw export に別 role `A-reference` で保存した。
+
+{final_section}
+
+## 品質・保証指標
+
+match は同一 `C` の O との ordered key 一致率、recall は全 visible exact top-k に対する median/min、Delta capture は exact top-k に Delta neighbor がある queryだけの median/min（括弧内は該当 query-session 数）である。P の gap は `max observed / max certified / max requested beta`（ordinary L2）で、必ずこの順の非減少 chain を満たすことを integrity gate が確認した。
+
+| condition | method | same-C match rate | full exact recall median/min | Delta capture median/min (n) | P gap obs/cert/req max |
+|---|---|---:|---:|---:|---:|
+{chr(10).join(quality_rows)}
+
+## Geometry audit
+
+各 validation query の全 group decisionについて、保存した厳密 group 最小距離と native `LB` を timing 外で照合した。`exact_min_lower - LB` は下界の緩さであり、大きいほど radius/geometry により判定余地を失っている。scan と skip を分けることで、scan が真に近い群によるものか、下界の緩さによるものかを観察できる。全 audit は completion の ancillary SHA-256 inventory と build の dataset/split ID に一致し、`passed=true` のものだけを集計した。
+
+| condition | action | decisions | radius median | true group-min L2 median | (true min-LB) median/p95 |
+|---|---|---:|---:|---:|---:|
+{chr(10).join(geometry_rows)}
+
+## Build / memory と限定的 break-even
+
+`Q_break_even = B_extra / (t_F - t_P)` とし、`B_extra` は保存 build manifest の center training + assignment + packing/radius、分母は query-paired API wall 差の中央値で近似した。これは更新頻度や永続化I/Oを含まない限定的な償却目安であり、`t_F - t_P <= 0` なら有限解なしとする。
+
+| condition | P method | B_extra ms | median (t_F-t_P) ms/query | Q_break_even queries | group memory bytes |
+|---|---|---:|---:|---:|---:|
+{chr(10).join(break_even_rows)}
+
+## 段階 ablation と原因分解
+
+以下は保存された実測値であり、`before/after` 比は 1 より大きいほど after が速い。旧 P 比較だけは query 集合が異なるため paired 推論には使わない。
+
+| stage | metric | before | after | before/after | scope / quality |
+|---|---|---:|---:|---:|---|
+{chr(10).join(ablation_rows)}
+
+1. **旧 layout → packed native**: 旧 Python P-only development profile は保存済みであり、cProfile 自体の膨張値を性能推定には使わない。対応する unprofiled evidence の抜粋は `{profile_note}`。
+2. **rescan → incremental heap**: `ablation_P_beta0_rescan_adaptive` と主 `native_P_beta0` は同じ P・beta=0・adaptive ranking を使い、各group decisionでの kth threshold 更新方式だけを変えた。F の rescan/heap は最終順位計算寄与の補助値に限る。
+3. **all-boundary exact → adaptive exact**: `ablation_F_heap_all_exact` と主 F は heap を共通にし、境界 exact 範囲だけを変えた。
+4. **no pruning → pruning**: N/P の paired比で group pruning の純寄与を分離した。
+5. **Base visible-map rebuild → immutable cache**: validation queryだけの非計時 auditで両者の candidate hash/key が完全一致することを確認し、wall time と hit/miss/rebuild counterを各 runの `audits/*.base-cache.json` に保存した。
+
+## 測定範囲と限界
+
+- CPU 1 thread、immutable snapshot、Base HNSW `M=32, efConstruction=200, efSearch=128`、既定 `k=10, C=64, groups=128`。center は Base のみで学習し、beta は measurement query ではなく validation query の kth L2 medianから固定した。
+- SIFT は Base 100k / Delta 10kを主条件、Delta 0/1k/100k、groups 64/128/512、k 1/10/100を検証した。GIST は memory 制約どおり Base 50k / Delta 5k / d=960。4 synthetic familyも実行した。
+- validation は SIFT query 0..399 の再利用領域だけを読み、事前登録 fresh final holdout 1200..2199 は gate 通過前に読み込んでいない。GIST 全 query は過去使用済みなので独立 holdoutとは呼ばない。
+- API wall は Base candidate preparationからReceipt完成までを全 method の独立randomized passで測り、その後に別順序のmicro passを実行した。composed E2E は共通 Base preparation + method固有 preparation + micro、micro は frozen C/native query preparation後の核である。build、oracle、audit、profileは query timing外。
+- shared hostでexclusive CPU reservationはない。静的SIFT/GISTは更新時系列、text embedding、production DBMSを代表しない。
+
+## Evidence identity
+
+| run | config SHA-256 | implementation-tree SHA-256 |
+|---|---|---|
+{chr(10).join(run_lines)}
+
+current implementation-tree / native shared-object SHA-256 はそれぞれ `{current_implementation_hash}` / `{current_native_hash}` で、correctness・validation、および final が lock 済みなら lock と一致することを report 生成時にも再検証した。
+
+大容量 raw は report 入力 root `{args.input}` の各 run の `raw/` にあり、git 管理対象外である。下表の inventory digest は `(relative path, SHA-256, rows, bytes)` の canonical JSON に対する SHA-256、completion は ancillary/build/audit を束縛する marker の SHA-256 である。各 shard の相対 path・SHA-256・row 数の完全 inventory は hash-bound analysis JSON の `runs[].raw_files` にある。
+
+| run | raw location (input-root relative) | shards | rows | bytes | raw inventory SHA-256 | completion SHA-256 |
+|---|---|---:|---:|---:|---|---|
+{chr(10).join(raw_inventory_lines)}
+
+保存 raw がある環境では `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 make native-report NATIVE_VALIDATION_INPUT="{args.input}"` で checksum 検証から report を再生成できる。実験自体の再実行は同じ 1-thread 環境で `make native-validate`。raw JSONL は非圧縮であり、別の圧縮 artifact は主張しない。
+
+追跡対象の summary/gate と deterministic representative sample だけでも、verdict、run/completion identity、全 raw shard checksum inventory、代表 row は第三者検査できる。ただし gitignore 済み raw/run directory がなければ全 query 行の再集計、ancillary audit の再読込、latency 分布の独立再計算はできず、summary から raw evidence を復元することもできない。
+
+- analysis SHA-256: `{file_sha256(args.summary)}`
+- gate SHA-256: `{file_sha256(args.gate)}`
+- correctness SHA-256: `{file_sha256(args.correctness)}`
+- old profile summary SHA-256: `{file_sha256(args.profile)}`
+- deterministic representative raw SHA-256: `{file_sha256(args.representative_raw)}`
+- final decision SHA-256: `{file_sha256(args.final_decision)}`
+- final summary/gate SHA-256: `{final_decision.get('final_summary_sha256', 'not run')}` / `{final_decision.get('final_gate_sha256', 'not run')}`
+- incomplete run は analysis から除外され、一覧は summary の `excluded_incomplete_runs` に残る。
+
+この結果は指定条件の検索方式比較であり、production DBMS 全体の優位性、ACID commit throughput、一般の embedding 分布への外挿を主張しない。
+"""
+    atomic_write_bytes(args.output, content.encode("utf-8"))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

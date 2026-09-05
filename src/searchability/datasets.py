@@ -194,22 +194,41 @@ def synthetic_dataset(
 
 
 def read_fvecs(path: str | Path, *, limit: int | None = None, offset: int = 0) -> np.ndarray:
-    """Memory-map a TEXMEX fvecs file and copy only the requested rows."""
+    """Memory-map and copy only the requested TEXMEX fvecs byte range.
+
+    A limited read deliberately does not validate or touch vector payloads
+    outside its selected interval.  This matters when a later query range has
+    been pre-registered as a fresh holdout.
+    """
 
     location = Path(path)
-    raw = np.memmap(location, dtype="<i4", mode="r")
-    if raw.size == 0:
+    byte_count = location.stat().st_size
+    if byte_count < 4:
         raise ValueError(f"empty fvecs file: {location}")
-    dimension = int(raw[0])
-    if dimension <= 0 or raw.size % (dimension + 1):
+    with location.open("rb") as handle:
+        dimension = int(np.frombuffer(handle.read(4), dtype="<i4")[0])
+    row_bytes = (dimension + 1) * 4
+    if dimension <= 0 or byte_count % row_bytes:
         raise ValueError(f"invalid fvecs layout: {location}")
-    rows = raw.reshape(-1, dimension + 1)
+    row_count = byte_count // row_bytes
+    if limit is not None and limit < 0:
+        raise ValueError("invalid fvecs limit")
+    if offset < 0 or offset > row_count:
+        raise ValueError("invalid fvecs offset")
+    stop = row_count if limit is None else min(row_count, offset + limit)
+    selected_count = stop - offset
+    if selected_count == 0:
+        return _readonly_float32(np.empty((0, dimension), dtype=np.float32))
+    rows = np.memmap(
+        location,
+        dtype="<i4",
+        mode="r",
+        offset=offset * row_bytes,
+        shape=(selected_count, dimension + 1),
+    )
     if not np.all(rows[:, 0] == dimension):
         raise ValueError(f"inconsistent fvecs dimensions: {location}")
-    stop = rows.shape[0] if limit is None else min(rows.shape[0], offset + limit)
-    if offset < 0 or offset > stop:
-        raise ValueError("invalid fvecs offset")
-    payload = np.ascontiguousarray(rows[offset:stop, 1:]).view("<f4")
+    payload = np.ascontiguousarray(rows[:, 1:]).view("<f4")
     return _readonly_float32(payload)
 
 
@@ -242,7 +261,36 @@ def texmex_dataset(
     n_delta: int,
     n_validation: int,
     n_test: int,
+    validation_query_offset: int = 0,
+    test_query_offset: int | None = None,
 ) -> DatasetSplit:
+    counts = {
+        "n_base": int(n_base),
+        "n_delta": int(n_delta),
+        "n_validation": int(n_validation),
+        "n_test": int(n_test),
+    }
+    if any(value < 0 for value in counts.values()):
+        raise ValueError("TEXMEX split counts must be non-negative")
+    validation_query_offset = int(validation_query_offset)
+    if test_query_offset is None:
+        # Preserve the Issue #1 prefix split when an old configuration does not
+        # contain the new explicit offsets.
+        test_query_offset = validation_query_offset + counts["n_validation"]
+    test_query_offset = int(test_query_offset)
+    if validation_query_offset < 0 or test_query_offset < 0:
+        raise ValueError("TEXMEX query offsets must be non-negative")
+
+    validation_stop = validation_query_offset + counts["n_validation"]
+    test_stop = test_query_offset + counts["n_test"]
+    if (
+        counts["n_validation"] > 0
+        and counts["n_test"] > 0
+        and max(validation_query_offset, test_query_offset)
+        < min(validation_stop, test_stop)
+    ):
+        raise ValueError("TEXMEX validation and test query ranges overlap")
+
     root_path = Path(root)
     provenance_manifest = root_path.parent / "manifests"
     if name == "sift":
@@ -257,11 +305,31 @@ def texmex_dataset(
         dimension = 960
     else:
         raise ValueError(f"unknown TEXMEX dataset: {name}")
-    vectors = vector_reader(base_path, limit=n_base + n_delta)
-    queries = read_fvecs(query_path, limit=n_validation + n_test)
-    if vectors.shape[0] < n_base + n_delta or queries.shape[0] < n_validation + n_test:
+    vectors = vector_reader(base_path, limit=counts["n_base"] + counts["n_delta"])
+    # Read the two query ranges independently.  In particular, a validation
+    # run using rows [0, 400) does not map or copy a pre-registered holdout at
+    # [1200, 2200) merely because that holdout exists in another config.
+    validation_queries = read_fvecs(
+        query_path,
+        offset=validation_query_offset,
+        limit=counts["n_validation"],
+    )
+    test_queries = read_fvecs(
+        query_path,
+        offset=test_query_offset,
+        limit=counts["n_test"],
+    )
+    if (
+        vectors.shape[0] < counts["n_base"] + counts["n_delta"]
+        or validation_queries.shape[0] < counts["n_validation"]
+        or test_queries.shape[0] < counts["n_test"]
+    ):
         raise ValueError(f"{name} files do not contain requested split sizes")
-    if vectors.shape[1] != dimension or queries.shape[1] != dimension:
+    if (
+        vectors.shape[1] != dimension
+        or validation_queries.shape[1] != dimension
+        or test_queries.shape[1] != dimension
+    ):
         raise ValueError(f"unexpected {name} dimension")
     provenance_path = provenance_manifest / f"{name}.json"
     if not provenance_path.is_file():
@@ -271,15 +339,27 @@ def texmex_dataset(
     provenance_sha256 = hashlib.sha256(provenance_path.read_bytes()).hexdigest()
     return DatasetSplit(
         name=f"texmex-{name}",
-        base=_readonly_float32(vectors[:n_base]),
-        delta=_readonly_float32(vectors[n_base : n_base + n_delta]),
-        validation_queries=_readonly_float32(queries[:n_validation]),
-        test_queries=_readonly_float32(queries[n_validation : n_validation + n_test]),
-        base_ids=_readonly_int64(np.arange(n_base, dtype=np.int64)),
-        delta_ids=_readonly_int64(np.arange(n_base, n_base + n_delta, dtype=np.int64)),
-        validation_query_ids=_readonly_int64(np.arange(n_validation, dtype=np.int64)),
+        base=_readonly_float32(vectors[: counts["n_base"]]),
+        delta=_readonly_float32(
+            vectors[
+                counts["n_base"] : counts["n_base"] + counts["n_delta"]
+            ]
+        ),
+        validation_queries=_readonly_float32(validation_queries),
+        test_queries=_readonly_float32(test_queries),
+        base_ids=_readonly_int64(np.arange(counts["n_base"], dtype=np.int64)),
+        delta_ids=_readonly_int64(
+            np.arange(
+                counts["n_base"],
+                counts["n_base"] + counts["n_delta"],
+                dtype=np.int64,
+            )
+        ),
+        validation_query_ids=_readonly_int64(
+            np.arange(validation_query_offset, validation_stop, dtype=np.int64)
+        ),
         test_query_ids=_readonly_int64(
-            np.arange(n_validation, n_validation + n_test, dtype=np.int64)
+            np.arange(test_query_offset, test_stop, dtype=np.int64)
         ),
         metadata={
             "source": "http://corpus-texmex.irisa.fr/",
@@ -291,11 +371,15 @@ def texmex_dataset(
             "split_seed_reason": (
                 "No random splitter is used: immutable prefix row ranges are recorded."
             ),
+            "validation_query_offset": validation_query_offset,
+            "test_query_offset": test_query_offset,
             "selection": (
-                f"base rows [0,{n_base}), Delta rows [{n_base},{n_base+n_delta}), "
-                f"validation queries [0,{n_validation}), test queries "
-                f"[{n_validation},{n_validation+n_test})"
+                f"base rows [0,{counts['n_base']}), Delta rows "
+                f"[{counts['n_base']},{counts['n_base'] + counts['n_delta']}), "
+                f"validation queries [{validation_query_offset},{validation_stop}), "
+                f"test queries [{test_query_offset},{test_stop})"
             ),
+            "query_ranges_disjoint": True,
             "distributed_ground_truth_reused": False,
             "static_split_is_time_ordered": False,
         },
@@ -323,5 +407,13 @@ def load_dataset(specification: Mapping[str, Any]) -> DatasetSplit:
             n_delta=int(specification["n_delta"]),
             n_validation=int(specification["n_validation"]),
             n_test=int(specification["n_test"]),
+            validation_query_offset=int(
+                specification.get("validation_query_offset", 0)
+            ),
+            test_query_offset=(
+                None
+                if specification.get("test_query_offset") is None
+                else int(specification["test_query_offset"])
+            ),
         )
     raise ValueError(f"unsupported dataset type: {kind}")

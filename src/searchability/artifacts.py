@@ -40,18 +40,41 @@ def implementation_tree_sha256(root: str | Path = ".") -> str:
 
     repository = Path(root).resolve()
     candidates: list[Path] = []
+    executable_suffixes = {".py", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"}
     for directory in (repository / "src", repository / "scripts"):
         if directory.is_dir():
             candidates.extend(
-                path for path in directory.rglob("*.py") if path.is_file()
+                path
+                for path in directory.rglob("*")
+                if path.is_file() and path.suffix.lower() in executable_suffixes
             )
-    for name in ("pyproject.toml", "requirements-lock.txt", "Makefile"):
+    for name in ("pyproject.toml", "requirements-lock.txt", "Makefile", "setup.py"):
         path = repository / name
         if path.is_file():
             candidates.append(path)
     digest = hashlib.sha256()
     digest.update(b"searchability-implementation-tree-v1\0")
     for path in sorted(set(candidates), key=lambda item: item.relative_to(repository).as_posix()):
+        relative = path.relative_to(repository).as_posix().encode("utf-8")
+        payload = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "little"))
+        digest.update(relative)
+        digest.update(len(payload).to_bytes(8, "little"))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
+def native_test_tree_sha256(root: str | Path = ".") -> str:
+    """Hash every Python test/support module used by the native gate."""
+
+    repository = Path(root).resolve()
+    tests = repository / "tests"
+    digest = hashlib.sha256()
+    digest.update(b"issue3-native-test-tree-v3\0")
+    for path in sorted(
+        (value for value in tests.rglob("*.py") if value.is_file()),
+        key=lambda value: value.relative_to(repository).as_posix(),
+    ):
         relative = path.relative_to(repository).as_posix().encode("utf-8")
         payload = path.read_bytes()
         digest.update(len(relative).to_bytes(8, "little"))

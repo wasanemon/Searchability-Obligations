@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "study_id": "issue-3-native-recheck",
+  "validation_config": "configs/native_recheck_validation.json",
+  "holdout_manifest": "results/native_recheck_evidence/holdout_manifest.json",
+  "correctness_evidence": "results/native_recheck_evidence/native_correctness.json",
+  "output_root": "results/native_recheck_runs/final",
+  "hnsw_output_root": "results/native_recheck_runs/final_hnsw",
+  "pre_hnsw_authorization": "results/native_recheck_evidence/pre_hnsw_authorization.json",
+  "process_session_seeds": [0, 1, 2],
+  "repetitions_per_session": 3,
+  "query_block_size": 25,
+  "warmup_queries": 10,
+  "bootstrap_resamples": 5000,
+  "bootstrap_seed": 6202053,
+  "primary": {
+    "dataset": "sift",
+    "query_interval": [1200, 2200],
+    "query_count": 1000,
+    "independence_label": "fresh_pre_registered_holdout",
+    "gate_eligible": true
+  },
+  "fixed_anchors": [
+    {
+      "validation_experiment_id": "sift-initial",
+      "role": "fixed_anchor_sift_initial",
+      "query_interval": [1200, 2200],
+      "independence_label": "fresh_pre_registered_holdout",
+      "gate_eligible": false
+    },
+    {
+      "validation_experiment_id": "gist-initial",
+      "role": "fixed_anchor_gist_initial",
+      "query_interval": [0, 1000],
+      "independence_label": "reused_non_independent",
+      "gate_eligible": false
+    },
+    {
+      "validation_experiment_id": "sift-delta-100000",
+      "role": "fixed_anchor_sift_delta_100000",
+      "query_interval": [1200, 2200],
+      "independence_label": "fresh_pre_registered_holdout",
+      "gate_eligible": false
+    }
+  ],
+  "final_gate": {
+    "primary_metric": "api_wall",
+    "performance_paired_ci_lower_strictly_above": 1.0,
+    "minimum_geometric_mean_speedup_vs_each_baseline": 1.10,
+    "maximum_p95_latency_ratio_vs_each_baseline": 1.05,
+    "required_baselines": ["F", "A"],
+    "required_process_sessions": 3,
+    "required_primary_queries": 1000,
+    "require_A_quality_match": true,
+    "engineering_GO_requires_delta_influence_subset": true,
+    "engineering_GO_requires_build_cost_evidence": true
+  },
+  "hnsw_references": {
+    "run_only_after_fresh_final_performance_pass": true,
+    "ef_search_values": [128, 512],
+    "methods": ["base_plus_delta_hnsw", "full_population_hnsw"],
+    "role": "approximate_reference_only_not_in_final_gate"
+  },
+  "locked_execution": {
+    "timed_methods": {
+      "F": "native_F",
+      "A": "faiss_A",
+      "P": "validation_selected_native_P"
+    },
+    "kernel": {
+      "backend": "pybind11_cpp17",
+      "language_standard": "C++17",
+      "numeric_contract": "interval_error_bounds_and_exact_boundary_ordering",
+      "threshold_mode": "heap",
+      "rank_strategy": "adaptive",
+      "python_fallback_permitted": false
+    },
+    "fallback_policy": {
+      "validation_not_passed": "no_final_lock_or_fresh_holdout_load",
+      "evidence_integrity_failure": "abort_inconclusive_fail_closed",
+      "final_performance_not_passed": "NO_GO_and_do_not_run_HNSW",
+      "duplicate_visible_logical_id_or_multiple_visible_version": "certified_native_full_scan_before_skip",
+      "population_below_k": "not_applicable"
+    }
+  }
+}

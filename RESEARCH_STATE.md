@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-05 23:58 (Asia/Tokyo)
+Last updated: 2026-09-06 01:49 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -89,6 +89,108 @@ Outcome: development profiling phase passed. The next resumable phase is to
 implement and build the compiled F/N/P kernel without changing centers, group
 membership, radii, or Base search parameters, then run native-specific
 correctness tests before any validation timing.
+
+## Issue #3 native implementation and pre-registration freeze
+
+- The implementation phase now provides a pybind11/C++17 packed native kernel
+  for F/N/P. It keeps contiguous vector/key/offset buffers, batched center/LB
+  work, an incremental heap threshold, adaptive exact boundary ordering, exact
+  certificate fallback, raw-pending scans, and the existing safe duplicate
+  visibility fallback. The build explicitly uses `-fno-fast-math` and
+  `-ffp-contract=off`, requires `FE_TONEAREST`, and records compiler, source,
+  binary, CPU, and numeric-mode evidence. The loaded binary's source hash and
+  current `_native_kernel.cpp` hash are both
+  `bf32578fc0e025531c2ab961aa164bd62c7859b93b96a26328176089f8fa6215`;
+  its shared-object SHA-256 is
+  `eef245f3d812b3e90466ceee8ea0107ee72de72ed81fd706304e390042cd100a`.
+- The optimized A path shares adaptive exact shortlist ranking and small merge
+  improvements but remains explicitly distinct from both the certified native
+  F path and the non-certified A-reference/Faiss-order path. O remains the old
+  same-C reference, and P-old remains development-profile-only. Immutable Base
+  visibility/candidate metadata is cached only under the bound
+  snapshot/generation/Delta-revision identity; cold/warm cache evidence is
+  emitted separately.
+- The native runner records separately randomized micro and real API-wall
+  measurements, verifies the same frozen C identity, performs truth/oracle and
+  LB audits outside timing, preserves per-query raw rows/checkpoints/completion
+  receipts, and requires exact method/query/repetition coverage before a run is
+  complete. Analysis accepts exactly one completed formal validation run and
+  rechecks raw, ancillary, LB, Base-cache, config, implementation, test,
+  holdout, native-build, and completion identities fail-closed. Large
+  per-query ratio arrays were removed from tracked summaries; deterministic
+  folding hashes plus aggregates remain reproducible from raw rows.
+- The fixed validation matrix has 13 cells: the SIFT/GIST main anchors, SIFT
+  Delta 0/1k/10k/100k, groups 64/128/512, k 1/10/100, beta 0/.01/.05/.10 at
+  the main cell, and four required synthetic geometries. The final policy fixes
+  the SIFT `[1200,2200)` fresh holdout, three process sessions, the primary and
+  anchors, the 1.10 geometric-mean and 1.05 p95 engineering thresholds, and the
+  condition that HNSW references run only after a fresh-final performance
+  pass. Conditional HNSW raw/checkpoint/completion evidence is additionally
+  bound to process build segments and serialized Base/Delta/full Faiss index
+  hashes; crash-orphan raw is preserved and revalidated on resume.
+- Before any native validation timing, all 44 then-existing split manifests
+  were inspected without loading query vectors. Historical SIFT query IDs were
+  exactly `[0,1200)` and the pre-registered `[1200,2200)` holdout is disjoint.
+  GIST IDs `[0,1000)` were all historically used and are labelled
+  non-independent. The frozen file/object SHA-256 pairs are validation config
+  `939d940781a215c021a979a734c6121370fb17fb8cb0b177489d90a80200a9c2` /
+  `76a8685ae6e8d0d2e736841201459d6a18ce00cf7405f9090167cee9a58bffc4`,
+  final policy
+  `2cc4c63556707cdd0bfd9ec459c1202d430b3f9d87da78f48dd1dee918bfd811` /
+  `44604d74f5e3feec590e5db41c216a223fc745015dfa2cdc5ff74de362509f6a`,
+  and holdout manifest file SHA-256
+  `c88807e8c140a71c5a5c7bea5e64550d7fd26ad81210d9b90b46dd26d2071886`.
+- Three independent code audits hardened test-tree hashing, validation-session
+  count, resume/completion coverage, LB audit identity, policy typing and
+  hashes, current-runtime checks, final/HNSW ordering, report run binding,
+  measured ablations, and raw-evidence disclosure. The final consolidated
+  lightweight run selected 244 tests and reported `244 passed, 2 deselected,
+  19 warnings in 14.03s`; the warnings are NumPy's optional-PyYAML notice.
+  `compileall` and `git diff --check` also succeeded. The executable-tree hash
+  at this freeze point is
+  `3f11bc88369f879a560b5251e883d5d641e48b874843ba2fb3630028ec8c75c0` and
+  the complete `tests/**/*.py` tree hash is
+  `ce49f6ad04225beb5727380a228f115e0ee72bf0bf57d3e88b186026b965c839`.
+
+Exact successful freeze checks:
+
+```bash
+.venv/bin/python -m compileall -q src scripts tests
+git diff --check
+make test
+.venv/bin/python - <<'PY'
+# file/object hashes, implementation_tree_sha256, native_test_tree_sha256,
+# native_build_info, and all config/policy/holdout registration assertions
+PY
+```
+
+### Preserved pre-freeze failures
+
+- An interim `make native-test` was accidentally started while final-policy
+  fixtures were still being integrated. The native fixed-seed test itself ran,
+  but the suite correctly failed with `1 failed, 219 passed in 64.08s` at
+  `test_final_gate_uses_fresh_query_level_three_session_speedup_and_p95`
+  (`NativeFinalError: locked final config has no experiment set`). It was
+  written as `status=failed`, `fixed_seed_cases=0`, never used to authorize a
+  benchmark, and copied before overwrite to
+  `results/native_recheck_runs/correctness_failures/native-test-20260905T161341Z/`.
+  The preserved JSON/JUnit SHA-256 values are respectively
+  `09533c1acea95e8b154a90babc3c98caf1f4f42211d5299d4cc519ede0cf21d6` and
+  `1af3dbc484324879c3c5a7a57f65c8bbfba4fadfe6ba5ab73e98fc898b7ac5e8`.
+  Later targeted suites and the consolidated lightweight suite passed after
+  the fixture/runtime fix; this does not substitute for the formal rerun.
+- During report-test development, one targeted invocation reported `1 failed,
+  22 passed` because a newly inserted test accidentally enclosed the tail of a
+  neighboring fixture (`NameError: decision is not defined`). The placement
+  was corrected and the exact target then reported `24 passed in 3.99s`; no
+  scientific raw was produced. A requested `ruff` check could not run because
+  ruff is not installed and is not claimed as passed.
+
+Outcome: implementation, tests, configs, and pre-registration are ready for a
+phase commit. No validation timing has run. The next resumable commands, in
+order, are `make setup` and `make native-test`; validation must not start unless
+the regenerated correctness evidence is `passed` and matches the frozen source,
+test tree, and loaded native binary.
 
 ## Scope and source status
 
