@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-05 17:50 (Asia/Tokyo)
+Last updated: 2026-09-05 21:22 (Asia/Tokyo)
 
 ## Scope and source status
 
@@ -295,6 +295,91 @@ make test
 - TEXMEX uses recorded immutable prefix row ranges; `split_seed` is `null`.
   Seeds 0/1/2 are accurately labelled `group_build_seed` and change k-means
   group construction, not the data split.
+- After phase commit `5293311`, the post-fix implementation-tree hash was
+  `d56668c2585afac1cbc15e99720d41bedb5967ead6ff25288321ee7c26aa1c76`
+  and the worktree was clean. Because the preserved failed run had the old
+  implementation hash, the fresh main run was started explicitly with
+  `.venv/bin/python scripts/run_experiment.py --config configs/evaluate.json`
+  rather than mixing checkpoints. Run
+  `texmex-main-and-lean-sweeps-20260905T085044.777697Z-98bb0214e0` completed
+  176/176 blocks from `2026-09-05T08:50:44.778738+00:00` to
+  `2026-09-05T11:39:17.413780+00:00`. It saved exactly 110,400 raw rows in
+  176 checksum-addressed shards (598,994,358 bytes), reported no run failures,
+  executed 15/15 Fraction-oracle samples with zero skips/mismatches, and
+  recorded peak RSS 6,193,922,048 bytes. Its completion checkpoint SHA-256 is
+  `8b7fa835f2f492dc021499100072feeef91a57ddcbe1eeb706d85f3884a97075`.
+- The isolated heavy condition was then started explicitly with
+  `.venv/bin/python scripts/run_experiment.py --config
+  configs/evaluate_delta100k.json`. Run
+  `texmex-sift-delta100k-heavy-sweep-20260905T113947.108257Z-e46edaa085`
+  completed 8/8 blocks from `2026-09-05T11:39:47.109100+00:00` to
+  `2026-09-05T11:57:43.092488+00:00`. It saved exactly 2,400 raw rows in 8
+  checksum-addressed shards (24,101,234 bytes), reported no run failures,
+  executed its 1/1 Fraction-oracle sample with no skip/mismatch, and recorded
+  peak RSS 1,611,010,048 bytes. Config hash is
+  `e46edaa0851a1719b6894bc5c6783db31e5e64996b50e130391bc7149d8cf353`;
+  completion checkpoint SHA-256 is
+  `0a04714768e603ece8374b75164ae313633c7effe655c8fd1adc5d0a40818a07`.
+- Both final runs share the same post-fix implementation hash and have durable
+  `COMPLETED.json` markers. The checksum-verifying analyzer has now accepted
+  both and produced the final totals recorded below.
+
+## Final analysis, evidence, and decision
+
+- `make report` completed against `results/runs` after both final runs. It
+  discovered three final-role runs, fail-closed excluded the incomplete one,
+  and accepted two completed runs. It reverified 184 raw shards and aggregated
+  112,800 query-method rows into 200 method-condition groups. Totals were:
+  contract violations 0, optimized-baseline validation failures 0, independent
+  Fraction oracle 16 executed / 16 matched / 0 skipped.
+- The analyzer was then hardened before final synthesis. It now validates the
+  `COMPLETED.json` run/config/implementation identities, checkpoint and
+  run-manifest hashes, raw-shard count, manifest status/block counts, effective
+  config object hash, and every raw row/hash/count. Tau, certificate, Delta
+  exact-neighbor capture, fallback reasons, scan amounts, and Delta-influence
+  aggregates are deduplicated at `(query_id, query_position)` before treating
+  repetitions as observations. A synthetic repeated-query unit test and a
+  deliberately tampered completion-receipt rejection test cover these rules.
+- `make report` was rerun after those changes. It generated the human-readable
+  aggregate, three figures, and deterministic tracked snapshot
+  `results/final_evidence/summary.json` (1,002,420 bytes, SHA-256
+  `ac6eb0cf49371588690aec15ea416dd7421e665525bb036f4949081e08d1e72c`).
+  The snapshot omits the analysis clock/local path but retains both completion
+  receipts and all 184 run-relative raw paths, byte counts, row counts, and
+  SHA-256 values. `manifest.json` binds that snapshot hash.
+- The proposal's pruning implementation was slower than optimized Delta Flat
+  in every one of 36 primary pruning method-conditions. No pruning or interval
+  recomputation summary had a paired-bootstrap 95% CI lower bound above 1.
+  Best was the degenerate SIFT Delta=0 beta=0 condition at 0.9727
+  `[0.9711, 0.9735]`; SIFT initial was 0.2780 `[0.2762, 0.2803]`, GIST reduced
+  initial 0.6294 `[0.6290, 0.6298]`, and SIFT Delta=100,000 0.05023
+  `[0.04913, 0.05073]`. There is no query-side or maintenance-amortized
+  break-even in the tested grid.
+- H1 is supported only for the tested same-frozen-`C` contract, H2 is not
+  supported, and H3 is supported only for the tested reference lifecycle.
+  The single overall decision in `reports/REPORT_ja.md` is therefore
+  `NOT_SUPPORTED_IN_TESTED_REGIME`.
+
+## Current-source verification and smoke
+
+- After adding the analysis-integrity regressions, `make test` collected 133
+  tests and reported `132 passed, 1 deselected, 8 warnings in 7.44s`.
+  `make test-full` reported `133 passed, 8 warnings in 54.54s`.
+- The dedicated fixed-seed 10,000-case command then reported `1 passed in
+  46.94s`. `results/test_evidence/randomized_10000_final.xml` has SHA-256
+  `4701592b238fc7dff6bd30ae568dee41049723efcecf2ee1f26c3674b9e9bbd9`;
+  its suite time is 46.815s and the executable-tree hash is
+  `8c4581cf733bf25b3e27c115be1dbdad1285564f03846c0d0e93b822c2c80f31`.
+- `make smoke` on that same executable tree completed current calibration run
+  `offline-smoke-20260905T121406.178089Z-43d3397eca`: 8/8 blocks, 384 rows,
+  no run failure, no contract/baseline failure, and 4/4 Fraction-oracle
+  matches. A run-specific analysis is saved under
+  `results/smoke/final_analysis`. Beta=0 group skips were 56.25%, 0%, 0%, and
+  75% for clustered, isotropic, Delta-near-query, and outlier-radius; exact
+  recall was 1.0, but pruning was slower than Delta Flat in all four.
+- A direct run-specific analyzer command emitted a Matplotlib unwritable-cache
+  warning and used `/tmp`; this is preserved as a non-result-affecting warning.
+  The Makefile supplies the repository-local `MPLCONFIGDIR` and did not emit it.
 
 ## External constraints and observed failures
 
@@ -357,31 +442,37 @@ make test
 - [x] Run boundary and fixed-seed 10,000-case tests; lifecycle-specific
       counterexamples remain tied to the lifecycle phase.
 - [x] Run an initial offline smoke and preserve per-query raw evidence.
-- [ ] Re-run smoke after independent-audit fixes and designate final evidence.
+- [x] Re-run smoke after independent-audit fixes and designate final evidence.
 - [x] Acquire and checksum-verify SIFT and GIST from the official TEXMEX source.
-- [ ] Evaluate both real datasets and preserve query-level evidence.
+- [x] Evaluate both real datasets and preserve query-level evidence.
 - [x] Implement and test SQLite obligations, MVCC snapshots, actual-process
       crash recovery, generation publication/pinning, and conservative GC.
-- [ ] Regenerate figures/aggregates and the Japanese report from saved raw data.
+- [x] Regenerate figures/aggregates and the Japanese report from saved raw data.
 - [ ] Re-run setup -> test -> smoke -> report from a clean environment.
 - [ ] Create phase commits and, if remote tooling permits, an Issue #1 PR.
 
 ## Current resume point
 
-Dataset acquisition, lifecycle hardening, benchmark hardening, the
-immutable-payload correctness fix, and the empty-partition hash fix are
-implemented. The first final real-data attempt and the successful targeted
-regression are preserved above. The exact next resumable work is:
+Dataset acquisition, final real-data runs, checksum-verifying analysis,
+tracked evidence export, the current-source smoke, and the Japanese scientific
+decision are complete. The preserved failed attempt remains excluded. The
+exact next resumable phase is to commit the analysis/report evidence, then make
+a detached fresh worktree and execute:
 
 ```bash
-make test-full
-make evaluate
-make report
+make setup
+make test
+make smoke
+make report \
+  REPORT_INPUT=/home/wasanemon/project/Searchability-Obligations/results/runs \
+  REPORT_OUTPUT=.cache/final-report-analysis
 ```
 
-Do not resume the old failed final run across the source-hash change. The
-runner's identity check enforces this and the new `make evaluate` must create a
-fresh final run.
+Record the detached commit, exact outputs, smoke run ID, and regenerated
+immutable-evidence hash here. Then mark the clean-verification checkbox in the
+Japanese report, make the final documentation commit, publish `main` and
+`codex/issue-1`, and open (but do not merge) the Issue #1 PR. Do not rerun or
+modify either completed final real-data run.
 
 Both dataset manifests report no acquisition failures. To re-verify or resume a
 future partial GIST acquisition, run:

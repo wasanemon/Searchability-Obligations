@@ -1,20 +1,20 @@
 {
   "schema_version": 1,
-  "executed_at": "2026-09-05T17:47:18+09:00",
+  "executed_at": "2026-09-05T21:16:34+09:00",
   "command": "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 .venv/bin/python -m pytest tests/test_randomized.py::test_fixed_seed_ten_thousand_random_cases -q --junitxml=results/test_evidence/randomized_10000_final.xml",
   "preceding_full_suite_command": "make test-full",
-  "preceding_full_suite_outcome": "130 passed, 7 warnings in 53.50s",
+  "preceding_full_suite_outcome": "133 passed, 8 warnings in 54.54s",
   "fixed_seed": 6202052,
   "case_count": 10000,
   "outcome": "passed",
   "tests": 1,
   "failures": 0,
   "errors": 0,
-  "pytest_reported_seconds": 47.46,
-  "junit_suite_seconds": 47.344,
-  "junit_sha256": "f441aa7324ea66ab09e9d346aa9d71c00782c9d9f11ab27cd7f2054a7462fd67",
-  "implementation_tree_sha256": "d56668c2585afac1cbc15e99720d41bedb5967ead6ff25288321ee7c26aa1c76",
-  "git_head": "e4a5fc0d19cda3bdd0dedb164b4dca58341dd2ca",
+  "pytest_reported_seconds": 46.94,
+  "junit_suite_seconds": 46.815,
+  "junit_sha256": "4701592b238fc7dff6bd30ae568dee41049723efcecf2ee1f26c3674b9e9bbd9",
+  "implementation_tree_sha256": "8c4581cf733bf25b3e27c115be1dbdad1285564f03846c0d0e93b822c2c80f31",
+  "git_head": "5293311ba69b19115dbedd34c64974885b32c632",
   "git_worktree_clean_before_test_artifact": false,
-  "evidence_note": "Hash-bound post-fix correctness rerun after the empty-partition dataset-hash regression was added. The implementation bytes are identified above; a final clean-environment rerun remains required."
+  "evidence_note": "Hash-bound rerun after final analyzer integrity checks and their regression tests were added. The search kernel is unchanged from the completed final real-data runs; the full executable-tree bytes are identified above. A separate clean-environment verification will be recorded in RESEARCH_STATE.md."
 }
