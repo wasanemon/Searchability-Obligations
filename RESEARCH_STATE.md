@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-05 21:39 (Asia/Tokyo)
+Last updated: 2026-09-05 21:45 (Asia/Tokyo)
 
 ## Scope and source status
 
@@ -8,10 +8,10 @@ Last updated: 2026-09-05 21:39 (Asia/Tokyo)
   created/updated at `2026-09-05T04:19:23Z`, and has zero comments (the comments
   endpoint returned `[]`).
 - The full body was fetched again at this resume point both through the REST
-  endpoint and the connected GitHub application. The repository remains empty
-  remotely with default branch `main`; the connected application reports
-  repository push/admin permission, so branch publication and a non-merged PR
-  will be attempted only after the final local evidence commit.
+  endpoint and the connected GitHub application. The repository was empty at
+  that point. After final evidence commits, the initial scaffold was published
+  as `main`, the full work as `codex/issue-1`, and non-merged PR
+  `https://github.com/wasanemon/Searchability-Obligations/pull/2` was opened.
 - The local and remote repository had no commits or ordinary files at start.
   There were no user changes to preserve.
 - Work is proceeding in the required order: contract/oracle, insert-only kernel,
@@ -451,9 +451,13 @@ make test
 - Sandbox DNS blocked the first GitHub API, `git ls-remote`, and PyPI attempts.
   Approved network execution succeeded for the Issue API and PyPI. No failure
   is being reclassified as a successful experiment.
-- The GitHub CLI is not installed. Remote branch/PR creation has not been
-  attempted. If it remains unavailable, local commits, diff, and exact commands
-  are the issue-authorized equivalent handoff.
+- The GitHub CLI is not installed. The first publication attempt,
+  `git push origin b5dc576:refs/heads/main`, failed with exit 128 because the
+  HTTPS remote had no interactive credential (`could not read Username`). The
+  failure was not relabelled as success. Existing SSH authentication was then
+  checked with `ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T
+  git@github.com`; GitHub identified `wasanemon` (the expected no-shell exit 1).
+  Explicit SSH pushes succeeded without changing the configured remote URL.
 - GIST can require several GiB and multiple indexes exceed naive in-memory
   estimates. Evaluation must stream/chunk exact work and build baselines
   sequentially. Any reduced sweep will be recorded as reduced, not complete.
@@ -499,6 +503,34 @@ make test
   manifest truthfully records a dirty worktree; the required clean-environment
   verification remains a later phase.
 
+## Publication state
+
+- Phase-sized local history was preserved. Commit `b5dc576` was pushed as the
+  empty repository's `main` baseline with:
+
+  ```bash
+  git push git@github.com:wasanemon/Searchability-Obligations.git \
+    b5dc576:refs/heads/main
+  ```
+
+- The completed branch through report-audit commit `1eacd1e` was pushed with:
+
+  ```bash
+  git push git@github.com:wasanemon/Searchability-Obligations.git \
+    codex/issue-1:refs/heads/codex/issue-1
+  ```
+
+- The connected GitHub application opened PR #2 from `codex/issue-1` to
+  `main`: `https://github.com/wasanemon/Searchability-Obligations/pull/2`.
+  It was created open, non-draft, and unmerged. Its Japanese body records the
+  negative overall decision, hypothesis-specific decisions, main timings,
+  contract scope, final and failed run identities, clean verification, raw-data
+  policy, and limitations; it says explicitly that it will not be auto-merged.
+- The detached temporary worktree `/tmp/searchability-clean-n1Ehz2` and its
+  dedicated `.venv` were removed with `git worktree remove --force` only after
+  its completed smoke raw directory had been copied and committed. The final
+  real-data directories remain untouched.
+
 ## Phase checklist
 
 - [x] Inspect empty history, resources, network constraints, and Faiss compatibility.
@@ -514,24 +546,28 @@ make test
       crash recovery, generation publication/pinning, and conservative GC.
 - [x] Regenerate figures/aggregates and the Japanese report from saved raw data.
 - [x] Re-run setup -> test -> smoke -> report from a clean environment.
-- [ ] Create phase commits and, if remote tooling permits, an Issue #1 PR.
+- [x] Create phase commits and an open, non-merged Issue #1 PR.
 
 ## Current resume point
 
-Dataset acquisition, final real-data runs, checksum-verifying analysis,
-tracked evidence export, Japanese decision, current-source verification, and
-the detached clean-environment acceptance sequence are complete. The preserved
-failed attempt remains excluded. The exact next resumable phase is:
+Dataset acquisition, implementation, tests, final real-data runs,
+checksum-verifying analysis, tracked evidence export, Japanese decision,
+detached clean-environment acceptance, phase commits, branch publication, and
+PR creation are complete. The preserved failed attempt remains excluded and PR
+#2 remains intentionally unmerged. After this publication-state commit is
+pushed, the exact next resumable checks are:
 
 ```bash
 git status --short --branch
 git diff --check
+git rev-parse HEAD
 ```
 
-Then commit this clean-verification record and copied smoke artifact, publish
-the empty remote's initial commit lineage as `main` plus `codex/issue-1`, and
-open (but do not merge) the Issue #1 PR. Do not rerun or modify either completed
-final real-data run.
+Then inspect the GitHub Actions run associated with that HEAD on PR #2. If it is
+still queued or running, wait; if it fails, preserve the log before changing
+anything and rerun only the failing verification locally. Do not merge the PR,
+and do not rerun or modify either completed final real-data run merely to refresh
+timestamps.
 
 Both dataset manifests report no acquisition failures. To re-verify or resume a
 future partial GIST acquisition, run:
