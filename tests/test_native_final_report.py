@@ -15,8 +15,16 @@ from scripts.decide_native_final import (
 from scripts.report_native_recheck import (
     _ablation_table,
     _completed_artifacts,
+    _delta_influence_tables,
+    _fallback_counts,
     _final_evidence,
+    _geometry_table,
+    _main_build_table,
+    _main_component_table,
+    _main_latency_scope_table,
+    _main_positive_beta_table,
     _rq_result_answers,
+    _verify_final_decision_correctness,
 )
 from searchability.artifacts import atomic_write_json, file_sha256
 
@@ -217,8 +225,338 @@ def test_rq_answers_report_counts_and_descriptive_mechanism_metrics() -> None:
     assert "N/P geomean 範囲=1.100–1.100" in rq3
     assert "median skipped groups=3.0–3.0/4" in rq3
     assert "scan gap median/p95=1.500/1.500 L2" in rq3
-    assert "有限 break-even は 1/1 operating points（30.0–30.0 queries）" in rq3
+    assert "group-only の F 比有限 break-even は 1/1 operating points（30.0–30.0 queries）" in rq3
     assert "L2 gap を pooled aggregate しない" in rq3
+
+
+def _subset_candidate(
+    experiment: str, method: str, *, sift: bool, influenced: int
+) -> dict[str, object]:
+    outcomes: dict[str, object] = {}
+    for role, value in (("F", 1.2), ("A", 0.8)):
+        outcomes[role] = {
+            "passed": role == "F",
+            "comparisons": [
+                {
+                    "geometric_mean": value,
+                    "bootstrap_95pct_lower": value - 0.1,
+                    "bootstrap_95pct_upper": value + 0.1,
+                    "delta_influence_subset": {
+                        "geometric_mean": value + 0.01,
+                        "bootstrap_95pct_lower": value - 0.02,
+                        "bootstrap_95pct_upper": value + 0.03,
+                        "paired_queries": influenced,
+                    },
+                }
+            ],
+        }
+    return {
+        "real_non_degenerate": True,
+        "sift_primary_for_fresh_holdout": sift,
+        "delta_influence_queries": influenced,
+        "experiment_id": experiment,
+        "proposed_method": method,
+        "requested_beta_l2": 2.5,
+        "comparison_outcomes": outcomes,
+    }
+
+
+def test_delta_influence_tables_include_every_sift_candidate_and_separate_gist() -> None:
+    gate = {
+        "candidates": [
+            _subset_candidate("sift-initial", "p0", sift=True, influenced=7),
+            _subset_candidate("sift-k-1", "p1", sift=True, influenced=5),
+            _subset_candidate("gist-initial", "pg", sift=False, influenced=3),
+            {
+                **_subset_candidate("synthetic", "ps", sift=False, influenced=2),
+                "real_non_degenerate": False,
+            },
+        ]
+    }
+    sift, gist, counts = _delta_influence_tables(gate)
+    assert counts == {
+        "sift": 2,
+        "gist": 1,
+        "sift_f_ci_lower_above_one": 2,
+        "sift_a_ci_lower_above_one": 0,
+        "sift_a_ci_upper_below_one": 2,
+    }
+    assert len(sift) == 2 and "| 7 |" in sift[0] and "| 5 |" in sift[1]
+    assert len(gist) == 1 and "gist-initial" in gist[0] and "| 3 |" in gist[0]
+
+    broken = json.loads(json.dumps(gate))
+    del broken["candidates"][0]["comparison_outcomes"]["F"]["comparisons"][0][
+        "delta_influence_subset"
+    ]
+    with pytest.raises(RuntimeError, match="subset is missing"):
+        _delta_influence_tables(broken)
+
+
+def _main_report_fixture() -> tuple[dict[str, object], list[dict[str, object]]]:
+    methods = ("native_F", "native_N", "faiss_A", "native_P_beta0", "native_P_beta1")
+    rows: list[dict[str, object]] = []
+    timing = {
+        "native_F": (1_000.0, 1_200.0, 1_400.0),
+        "native_N": (950.0, 1_150.0, 1_350.0),
+        "faiss_A": (900.0, 1_100.0, 1_300.0),
+        "native_P_beta0": (800.0, 1_000.0, 1_200.0),
+        "native_P_beta1": (700.0, 900.0, 1_050.0),
+    }
+    for position in (0, 1):
+        for method in methods:
+            micro, composed, api = timing[method]
+            if method == "faiss_A":
+                components = {
+                    "delta_faiss_search_ns": 200.0,
+                    "shortlist_exact_merge_ns": 400.0,
+                }
+            else:
+                components = {
+                    "kernel_total_ns": 300.0,
+                    "lb_calculation_ns": 20.0,
+                    "group_ordering_ns": 10.0,
+                    "group_scan_ns": 200.0,
+                    "raw_scan_ns": 30.0,
+                    "adaptive_exact_ns": 200.0,
+                    "receipt_ns": 100.0,
+                }
+            role = {
+                "native_F": "F",
+                "native_N": "N",
+                "faiss_A": "A",
+                "native_P_beta0": "P",
+                "native_P_beta1": "P",
+            }[method]
+            rows.append(
+                {
+                    "run_id": "run",
+                    "session_id": "session",
+                    "query_id": position,
+                    "query_position": position,
+                    "experiment_id": "sift-initial",
+                    "method": method,
+                    "method_role": role,
+                    "repetition": 0,
+                    "requested_beta_l2": (
+                        0.0 if method == "native_P_beta0" else 2.5
+                    ) if role == "P" else 0.0,
+                    "observed_beta_upper_l2": 0.0 if role == "P" else None,
+                    "certified_beta_l2": (
+                        0.0 if method == "native_P_beta0" else 2.25
+                    ) if role == "P" else None,
+                    "micro_latency_ns": micro + position,
+                    "composed_e2e_latency_ns": composed + position,
+                    "api_wall_latency_ns": api + position,
+                    "base_prepare_wall_ns": 100.0 + position,
+                    "native_query_prepare_wall_ns": (
+                        0.0 if method == "faiss_A" else 50.0 + position
+                    ),
+                    "component_timings_ns": components,
+                    "receipt": {
+                        "groups_skipped": (
+                            4 if method == "native_P_beta1" else 2
+                        ),
+                        "vectors_scanned": (
+                            60 if method == "native_P_beta1" else 80
+                        ),
+                    },
+                    "python_fallback_used": False,
+                }
+            )
+    comparisons: list[dict[str, object]] = []
+    for proposed in ("native_P_beta0", "native_P_beta1"):
+        for metric in ("micro", "composed_e2e", "api_wall"):
+            for role, value in (("F", 1.2), ("A", 0.9)):
+                comparisons.append(
+                    {
+                        "experiment_id": "sift-initial",
+                        "proposed_method": proposed,
+                        "baseline_role": role,
+                        "metric": metric,
+                        "geometric_mean": value,
+                        "bootstrap_95pct_lower": value - 0.05,
+                        "bootstrap_95pct_upper": value + 0.05,
+                        "paired_queries": 2,
+                        "paired_session_query_observations": 2,
+                        "sessions_per_query": {"min": 1, "max": 1},
+                    }
+                )
+    summary: dict[str, object] = {
+        "methods_by_experiment": {
+            "sift-initial": {
+                "F": ["native_F"],
+                "N": ["native_N"],
+                "A": ["faiss_A"],
+                "P": ["native_P_beta0", "native_P_beta1"],
+            }
+        },
+        "comparisons": comparisons,
+    }
+    return summary, rows
+
+
+def test_main_scope_components_positive_beta_and_fallback_have_denominators() -> None:
+    summary, rows = _main_report_fixture()
+    latency, coverage = _main_latency_scope_table(summary, rows)
+    assert [line.split(" | ")[0] for line in latency] == [
+        "| micro",
+        "| composed_e2e",
+        "| api_wall",
+    ]
+    assert coverage == {
+        "paired_queries": 2,
+        "paired_session_query_observations": 2,
+        "process_sessions": 1,
+        "sessions_per_query_min": 1,
+        "sessions_per_query_max": 1,
+    }
+    assert all(line.endswith("| 2/2 |") for line in latency)
+
+    components = _main_component_table(summary, rows)
+    assert len(components) == 5
+    assert any("| A | faiss_A |" in line and "| 2 |" in line for line in components)
+    assert any("native_P_beta1" in line and "2.500000" in line for line in components)
+
+    beta_rows, interpretation = _main_positive_beta_table(summary, rows)
+    assert len(beta_rows) == 2
+    assert "native_P_beta1" in beta_rows[1] and "-12.49" in beta_rows[1]
+    assert "pruning" in interpretation and "session-query n=2" in interpretation
+    assert "nonzero observed gap は 0/2 rows" in interpretation
+    assert "positive-beta raw rows（repetitionを含む）n=2" in interpretation
+    assert "0.000000/2.250000/2.500000 L2" in interpretation
+    assert "trade-off で得たものではない" in interpretation
+
+    cross_scale_rows = json.loads(json.dumps(rows))
+    cross_scale = next(
+        row for row in cross_scale_rows if row["method"] == "native_P_beta1"
+    ).copy()
+    cross_scale.update(
+        {
+            "experiment_id": "gist-initial",
+            "requested_beta_l2": 100.0,
+            "certified_beta_l2": 90.0,
+            "observed_beta_upper_l2": 0.0,
+        }
+    )
+    cross_scale_rows.append(cross_scale)
+    _, cross_scale_interpretation = _main_positive_beta_table(
+        summary, cross_scale_rows
+    )
+    assert "nonzero observed gap は 0/3 rows" in cross_scale_interpretation
+    assert "0.000000/2.250000/2.500000 L2" in cross_scale_interpretation
+    assert "90.000000/100.000000" not in cross_scale_interpretation
+
+    assert _fallback_counts(rows) == {
+        "fnp_rows": 8,
+        "fnp_fallbacks": 0,
+        "p_rows": 4,
+        "p_fallbacks": 0,
+    }
+
+    broken = json.loads(json.dumps(summary))
+    broken["comparisons"] = [
+        comparison
+        for comparison in broken["comparisons"]
+        if not (
+            comparison["metric"] == "micro"
+            and comparison["baseline_role"] == "F"
+            and comparison["proposed_method"] == "native_P_beta0"
+        )
+    ]
+    with pytest.raises(RuntimeError, match="comparison is missing"):
+        _main_latency_scope_table(broken, rows)
+
+    invalid_chain = json.loads(json.dumps(rows))
+    next(
+        row
+        for row in invalid_chain
+        if row["method"] == "native_P_beta1"
+    )["observed_beta_upper_l2"] = 2.4
+    with pytest.raises(RuntimeError, match="chain is invalid"):
+        _main_positive_beta_table(summary, invalid_chain)
+
+
+def test_geometry_and_build_tables_validate_counts_and_report_cold_warm_memory() -> None:
+    audits = {
+        "sift-initial": [
+            {
+                "scope": "validation_queries_only_outside_timing",
+                "query_count": 1,
+                "groups_checked": 2,
+                "scanned_groups_checked": 1,
+                "skipped_groups_checked": 1,
+                "rows": [
+                    {
+                        "query_id": 0,
+                        "query_position": 0,
+                        "action": "scan",
+                        "radius_upper": 3.0,
+                        "exact_min_l2_lower": 4.0,
+                        "lb_lower": 1.0,
+                    },
+                    {
+                        "query_id": 0,
+                        "query_position": 0,
+                        "action": "skip",
+                        "radius_upper": 2.0,
+                        "exact_min_l2_lower": 5.0,
+                        "lb_lower": 4.0,
+                    },
+                ],
+            }
+        ]
+    }
+    geometry, coverage = _geometry_table(audits)
+    assert len(geometry) == 2 and all("| 1 |" in line for line in geometry)
+    assert coverage["audited_query_sets"] == 1
+    assert coverage["decisions"] == 2
+    broken_audits = json.loads(json.dumps(audits))
+    broken_audits["sift-initial"][0]["groups_checked"] = 3
+    with pytest.raises(RuntimeError, match="count/action mismatch"):
+        _geometry_table(broken_audits)
+
+    builds = {
+        "sift-initial": [
+            {
+                "groups": {
+                    "center_training_ns": 100,
+                    "assignment_ns": 200,
+                    "packing_and_radius_ns": 300,
+                },
+                "native_packed_view": {"build_ns": 400, "warm_cache_lookup_ns": 5},
+                "memory": {
+                    "group_member_bytes": 10,
+                    "group_metadata_bytes_estimate": 2,
+                    "packed_python_owned_bytes": 20,
+                    "packed_native_owned_bytes": 30,
+                    "rss_change_bytes": 1000,
+                },
+            }
+        ]
+    }
+    cache = _cache_audits()
+    cache["sift-initial"][0]["cache_stats"] = {
+        "cache_build_ns": 50,
+        "cache_lookup_ns": 7,
+        "hits": 3,
+        "misses": 1,
+    }
+    table = _main_build_table(builds, cache)
+    rendered = "\n".join(table)
+    assert len(table) == 12
+    assert "warm cache identity lookup" in rendered
+    assert "62 bytes" in rendered
+    assert "not P-only attribution" in rendered
+
+
+def test_report_rejects_final_decision_bound_to_stale_correctness(tmp_path: Path) -> None:
+    correctness = tmp_path / "correctness.json"
+    _write(correctness, {"status": "passed"})
+    decision = {"correctness_sha256": file_sha256(correctness)}
+    _verify_final_decision_correctness(decision, correctness)
+    _write(correctness, {"status": "failed"})
+    with pytest.raises(RuntimeError, match="not bound to current correctness"):
+        _verify_final_decision_correctness(decision, correctness)
 
 
 def test_negative_report_accepts_absent_final_artifacts_and_rejects_wrong_verdict(
@@ -562,6 +900,7 @@ def _cache_audits() -> dict[str, list[dict[str, object]]]:
 
 def test_measured_ablation_table_is_complete_and_fail_closed() -> None:
     profile = {
+        "condition": {"development_queries": 5},
         "unprofiled_run": {
             "old_pruning_beta0_micro_milliseconds": 74.0,
             "old_pruning_beta0_e2e_milliseconds": 84.0,

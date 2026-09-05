@@ -208,7 +208,13 @@ def _authorization_inputs(tmp_path: Path, *, status: str = "PASSED") -> dict[str
             "native_backend_calls": {
                 "passed": True,
                 "native_binary_sha256": [binary],
-            }
+            },
+            "correctness": {
+                "passed": True,
+                "rows_checked": 1,
+                "failure_count": 0,
+                "failure_examples": [],
+            },
         },
     }
     correctness = {
@@ -294,6 +300,53 @@ def test_negative_validation_with_broken_source_is_not_a_performance_result(
     _write(inputs["summary_path"], inputs["summary"])
 
     with pytest.raises(NativeFinalError, match="source-integrity"):
+        prepare_final_authorization(**inputs)
+
+
+def test_negative_validation_with_broken_correctness_is_not_a_performance_result(
+    tmp_path: Path,
+) -> None:
+    inputs = _authorization_inputs(tmp_path, status="NOT_PASSED")
+    inputs["summary"]["integrity_checks"]["correctness"] = {
+        "passed": False,
+        "rows_checked": 1,
+        "failure_count": 1,
+        "failure_examples": [{"reasons": ["beta_zero_order_not_proved"]}],
+    }
+    _write(inputs["summary_path"], inputs["summary"])
+
+    with pytest.raises(NativeFinalError, match="correctness gate"):
+        prepare_final_authorization(**inputs)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    (
+        None,
+        [],
+        {},
+        {
+            "passed": True,
+            "rows_checked": True,
+            "failure_count": 0,
+            "failure_examples": [],
+        },
+        {
+            "passed": True,
+            "rows_checked": 1,
+            "failure_count": 0,
+            "failure_examples": None,
+        },
+    ),
+)
+def test_authorization_rejects_malformed_validation_correctness_aggregate(
+    tmp_path: Path, malformed: object
+) -> None:
+    inputs = _authorization_inputs(tmp_path, status="NOT_PASSED")
+    inputs["summary"]["integrity_checks"]["correctness"] = malformed
+    _write(inputs["summary_path"], inputs["summary"])
+
+    with pytest.raises(NativeFinalError, match="correctness integrity record"):
         prepare_final_authorization(**inputs)
 
 

@@ -97,6 +97,25 @@ candidate beats both the certified F and practical A baselines under the
 pre-registered paired-CI rule. If that gate does not pass, it deliberately
 creates no final lock and reads no fresh holdout.
 
+The full chain above starts a new source-frozen study and therefore requires an
+empty, new validation namespace. After a completed validation has been bound to
+its correctness-file checksum, re-run native correctness into alternate paths
+so the published evidence is not overwritten:
+
+```bash
+make \
+  NATIVE_CORRECTNESS=.cache/native-acceptance/correctness.json \
+  NATIVE_JUNIT=.cache/native-acceptance/correctness.xml \
+  native-test
+make native-smoke
+make native-report
+```
+
+`native-report` alone revalidates and regenerates from the saved formal raw.
+Do not re-run `native-evaluate` after replacing only the correctness file: the
+negative decision is intentionally checksum-bound to the exact correctness
+prerequisite that authorized its validation.
+
 The completed study reached `NOT_SUPPORTED_IN_TESTED_REGIME` / `NO_GO`: P beat
 F in the eligible SIFT validation cells but beat A in none, so the fresh final
 was not authorized. See

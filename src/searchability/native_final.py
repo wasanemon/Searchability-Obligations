@@ -142,6 +142,34 @@ def _validate_source_identity(
         raise NativeFinalError("validation source-integrity gate did not pass")
     if source.get("non_validation_runs") not in ([], ()):
         raise NativeFinalError("validation summary contains a non-validation run")
+    integrity_checks = summary.get("integrity_checks")
+    if not isinstance(integrity_checks, Mapping):
+        raise NativeFinalError("validation integrity checks are missing or malformed")
+    validation_correctness = integrity_checks.get("correctness")
+    if not isinstance(validation_correctness, Mapping):
+        raise NativeFinalError(
+            "validation correctness integrity record is missing or malformed"
+        )
+    rows_checked = validation_correctness.get("rows_checked")
+    failure_count = validation_correctness.get("failure_count")
+    failure_examples = validation_correctness.get("failure_examples")
+    if (
+        isinstance(rows_checked, bool)
+        or not isinstance(rows_checked, int)
+        or rows_checked <= 0
+        or isinstance(failure_count, bool)
+        or not isinstance(failure_count, int)
+        or not isinstance(failure_examples, list)
+    ):
+        raise NativeFinalError(
+            "validation correctness integrity record is missing or malformed"
+        )
+    if (
+        validation_correctness.get("passed") is not True
+        or failure_count != 0
+        or failure_examples
+    ):
+        raise NativeFinalError("validation correctness gate did not pass")
     implementation_hashes = source.get("implementation_tree_sha256")
     if not isinstance(implementation_hashes, list) or len(implementation_hashes) != 1:
         raise NativeFinalError("validation has no single implementation identity")
@@ -224,8 +252,8 @@ def _validate_source_identity(
         raise NativeFinalError("native correctness prerequisite has fewer than 10000 cases")
     if correctness.get("implementation_tree_sha256") != implementation_hash:
         raise NativeFinalError("correctness/validation implementation identities differ")
-    backend = summary.get("integrity_checks", {}).get("native_backend_calls", {})
-    if backend.get("passed") is not True:
+    backend = integrity_checks.get("native_backend_calls")
+    if not isinstance(backend, Mapping) or backend.get("passed") is not True:
         raise NativeFinalError("validation native backend gate did not pass")
     binary_hashes = backend.get("native_binary_sha256")
     if binary_hashes != [correctness.get("native_shared_object_sha256")]:

@@ -60,19 +60,98 @@ def _fmt(value: float | None, digits: int = 3) -> str:
     return "—" if value is None else f"{value:.{digits}f}"
 
 
-def _comparison_lookup(summary: Mapping[str, Any]) -> dict[tuple[str, str, str], Mapping[str, Any]]:
+def _comparison_lookup(
+    summary: Mapping[str, Any], metric: str = "api_wall"
+) -> dict[tuple[str, str, str], Mapping[str, Any]]:
     result: dict[tuple[str, str, str], Mapping[str, Any]] = {}
     for row in summary.get("comparisons", []):
-        if row.get("metric") != "api_wall":
+        if row.get("metric") != metric:
             continue
-        result[
-            (
-                str(row["experiment_id"]),
-                str(row["proposed_method"]),
-                str(row["baseline_role"]),
-            )
-        ] = row
+        key = (
+            str(row["experiment_id"]),
+            str(row["proposed_method"]),
+            str(row["baseline_role"]),
+        )
+        if key in result:
+            raise RuntimeError(f"duplicate {metric} comparison: {key}")
+        result[key] = row
     return result
+
+
+def _nested_query_medians(
+    rows: Sequence[Mapping[str, Any]],
+    experiment: str,
+    method: str,
+    container: str,
+    field: str,
+) -> dict[tuple[str, str, str, int], float]:
+    grouped: dict[tuple[str, str, str, int], list[float]] = {}
+    for row in rows:
+        if row.get("experiment_id") != experiment or row.get("method") != method:
+            continue
+        nested = row.get(container)
+        if not isinstance(nested, dict) or nested.get(field) is None:
+            continue
+        value = float(nested[field])
+        if not math.isfinite(value) or value < 0:
+            raise RuntimeError(
+                f"invalid component timing: {experiment}/{method}/{container}.{field}"
+            )
+        key = (
+            str(row.get("run_id", "unspecified")),
+            str(row.get("session_id", "unspecified")),
+            str(row["query_id"]),
+            int(row.get("query_position", -1)),
+        )
+        grouped.setdefault(key, []).append(value)
+    return {key: float(statistics.median(values)) for key, values in grouped.items()}
+
+
+def _requested_beta_by_method(
+    rows: Sequence[Mapping[str, Any]], experiment: str, methods: Sequence[str]
+) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for method in methods:
+        values = {
+            float(row["requested_beta_l2"])
+            for row in rows
+            if row.get("experiment_id") == experiment
+            and row.get("method") == method
+            and row.get("requested_beta_l2") is not None
+        }
+        if len(values) != 1 or not all(
+            math.isfinite(value) and value >= 0 for value in values
+        ):
+            raise RuntimeError(
+                f"missing/inconsistent requested beta: {experiment}/{method}"
+            )
+        result[method] = next(iter(values))
+    return result
+
+
+def _main_methods(
+    summary: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+) -> tuple[str, str, str, list[str], str]:
+    roles = summary.get("methods_by_experiment", {}).get("sift-initial")
+    if not isinstance(roles, dict):
+        raise RuntimeError("main sift-initial method roles are missing")
+
+    def unique(role: str) -> str:
+        methods = roles.get(role)
+        if not isinstance(methods, list) or len(methods) != 1:
+            raise RuntimeError(f"main sift-initial {role} method is not unique")
+        return str(methods[0])
+
+    f_method, a_method, n_method = (unique(role) for role in ("F", "A", "N"))
+    p_values = roles.get("P")
+    if not isinstance(p_values, list) or not p_values:
+        raise RuntimeError("main sift-initial P methods are missing")
+    p_methods = [str(value) for value in p_values]
+    beta_by_method = _requested_beta_by_method(rows, "sift-initial", p_methods)
+    beta_zero = [method for method, beta in beta_by_method.items() if beta == 0.0]
+    if len(beta_zero) != 1:
+        raise RuntimeError("main sift-initial beta=0 method is not unique")
+    return f_method, a_method, n_method, p_methods, beta_zero[0]
 
 
 def _component_median(
@@ -301,7 +380,7 @@ def _paired_ablation(
     before: str,
     after: str,
     field: str,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, int]:
     before_values = _positive_query_values(rows, experiment, before, field)
     after_values = _positive_query_values(rows, experiment, after, field)
     if set(before_values) != set(after_values):
@@ -314,6 +393,7 @@ def _paired_ablation(
         statistics.median(before_values.values()) / 1e6,
         statistics.median(after_values.values()) / 1e6,
         ratio,
+        len(before_values),
     )
 
 
@@ -346,7 +426,7 @@ def _quality_and_rechecks(
 
 def _base_cache_metrics(
     cache_audits: Mapping[str, Sequence[Mapping[str, Any]]], experiment: str
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, int]:
     evidence = cache_audits.get(experiment)
     if not evidence:
         raise RuntimeError(f"missing Base-cache measured ablation: {experiment}")
@@ -386,6 +466,7 @@ def _base_cache_metrics(
         statistics.median(cached) / 1e6,
         statistics.median(legacy) / 1e6,
         math.exp(math.fsum(math.log(old / new) for old, new in zip(legacy, cached)) / len(cached)),
+        len(cached),
     )
 
 
@@ -395,21 +476,21 @@ def _ablation_table(
     profile: Mapping[str, Any],
 ) -> list[str]:
     experiment = "sift-initial"
-    p_before, p_after, p_ratio = _paired_ablation(
+    p_before, p_after, p_ratio, p_n = _paired_ablation(
         rows,
         experiment=experiment,
         before="ablation_P_beta0_rescan_adaptive",
         after="native_P_beta0",
         field="micro_latency_ns",
     )
-    f_before, f_after, f_ratio = _paired_ablation(
+    f_before, f_after, f_ratio, f_n = _paired_ablation(
         rows,
         experiment=experiment,
         before="ablation_F_heap_all_exact",
         after="native_F",
         field="micro_latency_ns",
     )
-    cached, legacy, cache_ratio = _base_cache_metrics(cache_audits, experiment)
+    cached, legacy, cache_ratio, cache_n = _base_cache_metrics(cache_audits, experiment)
     old = profile.get("unprofiled_run", profile.get("matched_unprofiled_run"))
     if not isinstance(old, dict):
         raise RuntimeError("old P unprofiled ablation evidence is missing")
@@ -423,7 +504,7 @@ def _ablation_table(
     ) / 1e6
     if not all(math.isfinite(value) and value > 0 for value in (old_micro, old_e2e)):
         raise RuntimeError("old P unprofiled measured latency is missing/invalid")
-    a_ref, a, a_ratio = _paired_ablation(
+    a_ref, a, a_ratio, a_n = _paired_ablation(
         rows,
         experiment=experiment,
         before="faiss_A_reference",
@@ -437,12 +518,18 @@ def _ablation_table(
     ref_recheck_text = "0（非認証 float 順序、exact recheck なし）" if ref_rechecks is None else _fmt(ref_rechecks, 1)
     if a_rechecks is None:
         raise RuntimeError("faiss_A exact-recheck evidence is missing")
+    old_n = profile.get("condition", {}).get("development_queries")
+    if isinstance(old_n, bool) or not isinstance(old_n, int) or old_n <= 0:
+        raise RuntimeError("old P development query denominator is missing/invalid")
+    new_n = len(
+        _positive_query_values(rows, experiment, "native_P_beta0", "micro_latency_ns")
+    )
     return [
-        f"| P rescan → heap | micro p50 ms | {_fmt(p_before)} | {_fmt(p_after)} | {_fmt(p_ratio)} | query-paired |",
-        f"| F all-exact → adaptive | micro p50 ms | {_fmt(f_before)} | {_fmt(f_after)} | {_fmt(f_ratio)} | query-paired |",
-        f"| Base legacy rebuild → cached | audit wall p50 ms | {_fmt(legacy)} | {_fmt(cached)} | {_fmt(cache_ratio)} | query-paired; candidate hash/key identical |",
-        f"| old P → packed/native P | micro p50 ms | {_fmt(old_micro)} | {_fmt(new_micro)} | {_fmt(old_micro / new_micro)} | **nonpaired** development 5 queries vs validation queries; old E2E/new API={_fmt(old_e2e)}/{_fmt(new_api)} ms |",
-        f"| A-reference → A | API p50 ms | {_fmt(a_ref)} | {_fmt(a)} | {_fmt(a_ratio)} | query-paired; recall med/min {_fmt(ref_recall, 4)}/{_fmt(ref_recall_min, 4)} → {_fmt(a_recall, 4)}/{_fmt(a_recall_min, 4)}; exact rechecks {ref_recheck_text} → {_fmt(a_rechecks, 1)} |",
+        f"| P rescan → heap | micro p50 ms | {_fmt(p_before)} | {_fmt(p_after)} | {_fmt(p_ratio)} | {p_n} paired session-query |",
+        f"| F all-exact → adaptive | micro p50 ms | {_fmt(f_before)} | {_fmt(f_after)} | {_fmt(f_ratio)} | {f_n} paired session-query |",
+        f"| Base legacy rebuild → cached | audit wall p50 ms | {_fmt(legacy)} | {_fmt(cached)} | {_fmt(cache_ratio)} | {cache_n} paired audit queries; candidate hash/key identical |",
+        f"| old P → packed/native P | micro p50 ms | {_fmt(old_micro)} | {_fmt(new_micro)} | {_fmt(old_micro / new_micro)} | **nonpaired** development n={old_n} vs validation session-query n={new_n}; old E2E/new API={_fmt(old_e2e)}/{_fmt(new_api)} ms |",
+        f"| A-reference → A | API p50 ms | {_fmt(a_ref)} | {_fmt(a)} | {_fmt(a_ratio)} | {a_n} paired session-query; recall med/min {_fmt(ref_recall, 4)}/{_fmt(ref_recall_min, 4)} → {_fmt(a_recall, 4)}/{_fmt(a_recall_min, 4)}; exact rechecks {ref_recheck_text} → {_fmt(a_rechecks, 1)} |",
     ]
 
 
@@ -484,6 +571,7 @@ def _quality_table(rows: Sequence[Mapping[str, Any]]) -> list[str]:
                 (
                     experiment,
                     method,
+                    str(len(values)),
                     f"{sum(matches) / len(matches):.4f}" if matches else "—",
                     f"{statistics.median(recalls):.4f}/{min(recalls):.4f}" if recalls else "—",
                     f"{statistics.median(captures):.4f}/{min(captures):.4f} ({len(captures)})" if captures else "— (0)",
@@ -498,10 +586,462 @@ def _quality_table(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     return output
 
 
-def _geometry_table(audits: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[str]:
-    output = []
+def _single_candidate_comparison(
+    candidate: Mapping[str, Any], role: str
+) -> Mapping[str, Any]:
+    outcomes = candidate.get("comparison_outcomes")
+    outcome = outcomes.get(role) if isinstance(outcomes, dict) else None
+    comparisons = outcome.get("comparisons") if isinstance(outcome, dict) else None
+    if not isinstance(comparisons, list) or len(comparisons) != 1:
+        raise RuntimeError(
+            "candidate comparison is missing/non-unique: "
+            f"{candidate.get('experiment_id')}/{candidate.get('proposed_method')}/{role}"
+        )
+    comparison = comparisons[0]
+    if not isinstance(comparison, dict):
+        raise RuntimeError("candidate comparison is malformed")
+    return comparison
+
+
+def _delta_influence_tables(
+    gate: Mapping[str, Any],
+) -> tuple[list[str], list[str], dict[str, int]]:
+    """Render every eligible SIFT subset and the non-independent GIST anchors."""
+
+    sift_rows: list[str] = []
+    gist_rows: list[str] = []
+    sift_f_lower_passes = 0
+    sift_a_lower_passes = 0
+    sift_a_upper_below_one = 0
+    candidates = gate.get("candidates")
+    if not isinstance(candidates, list):
+        raise RuntimeError("validation gate candidate inventory is missing")
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or candidate.get("real_non_degenerate") is not True:
+            continue
+        influence_n = candidate.get("delta_influence_queries")
+        if isinstance(influence_n, bool) or not isinstance(influence_n, int) or influence_n < 0:
+            raise RuntimeError("candidate Delta-influence denominator is invalid")
+        is_sift = candidate.get("sift_primary_for_fresh_holdout") is True
+        is_gist = str(candidate.get("experiment_id", "")).startswith("gist-")
+        if not ((is_sift and influence_n > 0) or is_gist):
+            continue
+        role_values: dict[str, Mapping[str, Any]] = {}
+        for role in ("F", "A"):
+            comparison = _single_candidate_comparison(candidate, role)
+            subset = comparison.get("delta_influence_subset")
+            if not isinstance(subset, dict):
+                raise RuntimeError(
+                    "Delta-influence subset is missing: "
+                    f"{candidate.get('experiment_id')}/{candidate.get('proposed_method')}/{role}"
+                )
+            try:
+                values = {
+                    name: float(subset[name])
+                    for name in (
+                        "geometric_mean",
+                        "bootstrap_95pct_lower",
+                        "bootstrap_95pct_upper",
+                    )
+                }
+                paired_queries = int(subset["paired_queries"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise RuntimeError("Delta-influence subset is malformed") from error
+            if (
+                not all(math.isfinite(value) and value > 0 for value in values.values())
+                or paired_queries != influence_n
+            ):
+                raise RuntimeError("Delta-influence subset denominator/value mismatch")
+            role_values[role] = {**values, "paired_queries": paired_queries}
+        beta = float(candidate.get("requested_beta_l2", float("nan")))
+        if not math.isfinite(beta) or beta < 0:
+            raise RuntimeError("candidate beta is missing/invalid")
+        row = (
+            f"| {candidate.get('experiment_id')} | {candidate.get('proposed_method')} | "
+            f"{_fmt(beta, 6)} | {influence_n} | "
+            f"{_fmt(role_values['F']['geometric_mean'])} "
+            f"[{_fmt(role_values['F']['bootstrap_95pct_lower'])}, "
+            f"{_fmt(role_values['F']['bootstrap_95pct_upper'])}] | "
+            f"{_fmt(role_values['A']['geometric_mean'])} "
+            f"[{_fmt(role_values['A']['bootstrap_95pct_lower'])}, "
+            f"{_fmt(role_values['A']['bootstrap_95pct_upper'])}] |"
+        )
+        (sift_rows if is_sift else gist_rows).append(row)
+        if is_sift:
+            sift_f_lower_passes += int(
+                float(role_values["F"]["bootstrap_95pct_lower"]) > 1.0
+            )
+            sift_a_lower_passes += int(
+                float(role_values["A"]["bootstrap_95pct_lower"]) > 1.0
+            )
+            sift_a_upper_below_one += int(
+                float(role_values["A"]["bootstrap_95pct_upper"]) < 1.0
+            )
+    if not sift_rows or not gist_rows:
+        raise RuntimeError("SIFT/GIST Delta-influence table is incomplete")
+    return sift_rows, gist_rows, {
+        "sift": len(sift_rows),
+        "gist": len(gist_rows),
+        "sift_f_ci_lower_above_one": sift_f_lower_passes,
+        "sift_a_ci_lower_above_one": sift_a_lower_passes,
+        "sift_a_ci_upper_below_one": sift_a_upper_below_one,
+    }
+
+
+def _main_latency_scope_table(
+    summary: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+) -> tuple[list[str], dict[str, int]]:
+    f_method, a_method, _, _, p_method = _main_methods(summary, rows)
+    scopes = (
+        ("micro", "micro_latency_ns"),
+        ("composed_e2e", "composed_e2e_latency_ns"),
+        ("api_wall", "api_wall_latency_ns"),
+    )
+    output: list[str] = []
+    process_sessions: set[tuple[str, str]] = set()
+    paired_queries: set[int] = set()
+    paired_observations: set[int] = set()
+    sessions_per_query: set[int] = set()
+    for scope, field in scopes:
+        lookup = _comparison_lookup(summary, scope)
+        f_comparison = lookup.get(("sift-initial", p_method, "F"))
+        a_comparison = lookup.get(("sift-initial", p_method, "A"))
+        if not isinstance(f_comparison, dict) or not isinstance(a_comparison, dict):
+            raise RuntimeError(f"main {scope} F/A comparison is missing")
+        method_percentiles: dict[str, tuple[float | None, float | None, float | None]] = {}
+        method_keys: dict[str, set[tuple[str, str, str, int]]] = {}
+        for method in (f_method, a_method, p_method):
+            values = _query_medians(rows, "sift-initial", method, field)
+            if not values or any(not math.isfinite(value) or value <= 0 for value in values.values()):
+                raise RuntimeError(f"main {scope} latency is missing/invalid: {method}")
+            method_percentiles[method] = _percentiles(list(values.values()))
+            method_keys[method] = set(values)
+        if not (
+            method_keys[f_method] == method_keys[a_method] == method_keys[p_method]
+        ):
+            raise RuntimeError(f"main {scope} latency rows are not paired")
+        process_sessions.update((key[0], key[1]) for key in method_keys[p_method])
+        for comparison in (f_comparison, a_comparison):
+            try:
+                q_n = int(comparison["paired_queries"])
+                observation_n = int(comparison["paired_session_query_observations"])
+                session_range = comparison["sessions_per_query"]
+                session_min = int(session_range["min"])
+                session_max = int(session_range["max"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise RuntimeError(f"main {scope} denominator is malformed") from error
+            if (
+                q_n <= 0
+                or observation_n != len(method_keys[p_method])
+                or not (0 < session_min <= session_max)
+            ):
+                raise RuntimeError(f"main {scope} denominator is inconsistent")
+            paired_queries.add(q_n)
+            paired_observations.add(observation_n)
+            sessions_per_query.update((session_min, session_max))
+
+        def latency_text(method: str) -> str:
+            return "/".join(_fmt(value) for value in method_percentiles[method])
+
+        output.append(
+            f"| {scope} | {latency_text(f_method)} | {latency_text(a_method)} | "
+            f"{latency_text(p_method)} | "
+            f"{_fmt(f_comparison.get('geometric_mean'))} "
+            f"[{_fmt(f_comparison.get('bootstrap_95pct_lower'))}, "
+            f"{_fmt(f_comparison.get('bootstrap_95pct_upper'))}] | "
+            f"{_fmt(a_comparison.get('geometric_mean'))} "
+            f"[{_fmt(a_comparison.get('bootstrap_95pct_lower'))}, "
+            f"{_fmt(a_comparison.get('bootstrap_95pct_upper'))}] | "
+            f"{int(f_comparison['paired_queries'])}/"
+            f"{int(f_comparison['paired_session_query_observations'])} |"
+        )
+    if len(paired_queries) != 1 or len(paired_observations) != 1:
+        raise RuntimeError("main latency denominators differ across scopes/roles")
+    return output, {
+        "paired_queries": next(iter(paired_queries)),
+        "paired_session_query_observations": next(iter(paired_observations)),
+        "process_sessions": len(process_sessions),
+        "sessions_per_query_min": min(sessions_per_query),
+        "sessions_per_query_max": max(sessions_per_query),
+    }
+
+
+def _main_component_table(
+    summary: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+) -> list[str]:
+    f_method, a_method, n_method, p_methods, _ = _main_methods(summary, rows)
+    beta_by_method = _requested_beta_by_method(rows, "sift-initial", p_methods)
+    methods = [f_method, n_method, a_method, *sorted(p_methods, key=beta_by_method.get)]
+    output: list[str] = []
+    for method in methods:
+        micro = _query_medians(rows, "sift-initial", method, "micro_latency_ns")
+        base_prepare = _query_medians(rows, "sift-initial", method, "base_prepare_wall_ns")
+        method_prepare = _query_medians(
+            rows, "sift-initial", method, "native_query_prepare_wall_ns"
+        )
+        if not micro or set(micro) != set(base_prepare) or set(micro) != set(method_prepare):
+            raise RuntimeError(f"main component denominator mismatch: {method}")
+
+        def nested(field: str, *, required: bool = True) -> dict[tuple[str, str, str, int], float]:
+            values = _nested_query_medians(
+                rows, "sift-initial", method, "component_timings_ns", field
+            )
+            if required and set(values) != set(micro):
+                raise RuntimeError(f"main component is missing: {method}/{field}")
+            return values
+
+        if method == a_method:
+            kernel_or_delta = nested("delta_faiss_search_ns")
+            exact_or_merge = nested("shortlist_exact_merge_ns")
+            lb, order, group_scan, raw_scan, receipt = ({}, {}, {}, {}, {})
+            accounted = {
+                key: kernel_or_delta[key] + exact_or_merge[key] for key in micro
+            }
+        else:
+            kernel_or_delta = nested("kernel_total_ns")
+            lb = nested("lb_calculation_ns")
+            order = nested("group_ordering_ns")
+            group_scan = nested("group_scan_ns")
+            raw_scan = nested("raw_scan_ns")
+            exact_or_merge = nested("adaptive_exact_ns")
+            receipt = nested("receipt_ns")
+            accounted = {
+                key: kernel_or_delta[key] + exact_or_merge[key] + receipt[key]
+                for key in micro
+            }
+        residual = {key: micro[key] - accounted[key] for key in micro}
+        if any(not math.isfinite(value) or value < -1.0 for value in residual.values()):
+            raise RuntimeError(f"main component timers overlap/exceed micro: {method}")
+
+        def p50_ms(values: Mapping[Any, float]) -> float | None:
+            return None if not values else statistics.median(values.values()) / 1e6
+
+        role = next(
+            (
+                role_name
+                for role_name, role_method in (
+                    ("F", f_method),
+                    ("N", n_method),
+                    ("A", a_method),
+                )
+                if method == role_method
+            ),
+            "P",
+        )
+        beta_text = _fmt(beta_by_method[method], 6) if method in beta_by_method else "—"
+        output.append(
+            "| " + " | ".join(
+                (
+                    role,
+                    method,
+                    beta_text,
+                    str(len(micro)),
+                    _fmt(p50_ms(base_prepare)),
+                    _fmt(p50_ms(method_prepare)),
+                    _fmt(p50_ms(micro)),
+                    _fmt(p50_ms(kernel_or_delta)),
+                    _fmt(p50_ms(lb)),
+                    _fmt(p50_ms(order)),
+                    _fmt(p50_ms(group_scan)),
+                    _fmt(p50_ms(raw_scan)),
+                    _fmt(p50_ms(exact_or_merge)),
+                    _fmt(p50_ms(receipt)),
+                    _fmt(p50_ms(residual)),
+                )
+            ) + " |"
+        )
+    return output
+
+
+def _main_positive_beta_table(
+    summary: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
+) -> tuple[list[str], str]:
+    _, _, _, p_methods, beta_zero_method = _main_methods(summary, rows)
+    beta_by_method = _requested_beta_by_method(rows, "sift-initial", p_methods)
+    ordered = sorted(p_methods, key=beta_by_method.get)
+    if len(ordered) < 2 or beta_by_method[ordered[-1]] <= 0:
+        raise RuntimeError("main positive-beta operating points are missing")
+    metrics: dict[str, dict[str, float | int]] = {}
+    output: list[str] = []
+    for method in ordered:
+        latency = _query_medians(rows, "sift-initial", method, "api_wall_latency_ns")
+        skips = _nested_query_medians(
+            rows, "sift-initial", method, "receipt", "groups_skipped"
+        )
+        scanned = _nested_query_medians(
+            rows, "sift-initial", method, "receipt", "vectors_scanned"
+        )
+        if not latency or set(latency) != set(skips) or set(latency) != set(scanned):
+            raise RuntimeError(f"positive-beta denominator mismatch: {method}")
+        p50, p95, p99 = _percentiles(list(latency.values()))
+        assert p50 is not None and p95 is not None and p99 is not None
+        metrics[method] = {
+            "n": len(latency),
+            "p50": p50,
+            "p95": p95,
+            "p99": p99,
+            "skips": statistics.median(skips.values()),
+            "scanned": statistics.median(scanned.values()),
+        }
+    baseline = metrics[beta_zero_method]
+    for method in ordered:
+        value = metrics[method]
+
+        def percent_change(name: str) -> float:
+            denominator = float(baseline[name])
+            if denominator <= 0:
+                raise RuntimeError(f"positive-beta baseline is non-positive: {name}")
+            return 100.0 * (float(value[name]) / denominator - 1.0)
+
+        output.append(
+            f"| {method} | {_fmt(beta_by_method[method], 6)} | {value['n']} | "
+            f"{_fmt(float(value['p50']))}/{_fmt(float(value['p95']))}/"
+            f"{_fmt(float(value['p99']))} | "
+            f"{percent_change('p50'):+.3f}/{percent_change('p95'):+.3f}/"
+            f"{percent_change('p99'):+.3f}% | {_fmt(float(value['skips']), 1)} | "
+            f"{_fmt(float(value['scanned']), 1)} ({percent_change('scanned'):+.3f}%) |"
+        )
+    strongest = ordered[-1]
+    strongest_values = metrics[strongest]
+    api_lookup = _comparison_lookup(summary, "api_wall")
+    a_comparison = api_lookup.get(("sift-initial", strongest, "A"))
+    if not isinstance(a_comparison, dict):
+        raise RuntimeError("positive-beta A/P comparison is missing")
+    changed_pruning = (
+        float(strongest_values["skips"]) > float(baseline["skips"])
+        or float(strongest_values["scanned"]) < float(baseline["scanned"])
+    )
+    changed_latency = any(
+        float(strongest_values[name]) < float(baseline[name])
+        for name in ("p50", "p95", "p99")
+    )
+    positive_raw = [
+        row
+        for row in rows
+        if row.get("method_role") == "P"
+        and row.get("requested_beta_l2") is not None
+        and float(row["requested_beta_l2"]) > 0
+    ]
+    if not positive_raw:
+        raise RuntimeError("positive-beta P raw population is missing")
+    gap_rows: list[tuple[float, float, float]] = []
+    main_gap_rows: list[tuple[float, float, float]] = []
+    for row in positive_raw:
+        try:
+            observed = float(row["observed_beta_upper_l2"])
+            certified = float(row["certified_beta_l2"])
+            requested = float(row["requested_beta_l2"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError("positive-beta gap chain is missing/malformed") from error
+        if (
+            not all(
+                math.isfinite(value) and value >= 0
+                for value in (observed, certified, requested)
+            )
+            or not observed <= certified <= requested
+        ):
+            raise RuntimeError("positive-beta observed/certified/requested chain is invalid")
+        gap = (observed, certified, requested)
+        gap_rows.append(gap)
+        if row.get("experiment_id") == "sift-initial":
+            main_gap_rows.append(gap)
+    if not main_gap_rows:
+        raise RuntimeError("main positive-beta gap population is missing")
+    nonzero_observed = sum(observed > 0 for observed, _, _ in gap_rows)
+    max_observed = max(observed for observed, _, _ in main_gap_rows)
+    max_certified = max(certified for _, certified, _ in main_gap_rows)
+    max_requested = max(requested for _, _, requested in main_gap_rows)
+    gap_tradeoff = (
+        "observed gap は全て 0 であり、この実測 latency/pruning 差は"
+        "観測された品質 gap との trade-off で得たものではない"
+        if nonzero_observed == 0
+        else "nonzero observed gap があり、latency/pruning 差を品質 gap と切り離しては解釈できない"
+    )
+    contribution = (
+        "正の beta が pruning と少なくとも一つの latency percentile に作用した"
+        if changed_pruning and changed_latency
+        else "正の beta の pruning/latency 改善はこの比較では一貫して観測されなかった"
+    )
+    interpretation = (
+        f"beta=0 から最大の保存済み正値 beta={_fmt(beta_by_method[strongest], 6)} "
+        f"（session-query n={strongest_values['n']}）への比較では、{contribution}。"
+        f"ただし同 operating point の A/P={_fmt(a_comparison.get('geometric_mean'))} "
+        f"[CI {_fmt(a_comparison.get('bootstrap_95pct_lower'))}, "
+        f"{_fmt(a_comparison.get('bootstrap_95pct_upper'))}] であり、"
+        "この記述的寄与だけで gate 結論を変更しない。"
+        f"全 positive-beta P raw の nonzero observed gap は "
+        f"{nonzero_observed}/{len(gap_rows)} rows。主条件の positive-beta "
+        f"raw rows（repetitionを含む）n={len(main_gap_rows)} における "
+        "max observed/certified/requested="
+        f"{_fmt(max_observed, 6)}/{_fmt(max_certified, 6)}/"
+        f"{_fmt(max_requested, 6)} L2。{gap_tradeoff}"
+        "（他条件での gap 不発生は主張しない）。"
+    )
+    return output, interpretation
+
+
+def _geometry_table(
+    audits: Mapping[str, Sequence[Mapping[str, Any]]]
+) -> tuple[list[str], dict[str, Any]]:
+    output: list[str] = []
+    total_audits = total_queries = total_decisions = total_scan = total_skip = 0
+    main_queries = main_decisions = 0
+    scopes: set[str] = set()
     for experiment, evidence_rows in sorted(audits.items()):
-        rows = [row for audit in evidence_rows for row in audit.get("rows", [])]
+        rows: list[Mapping[str, Any]] = []
+        experiment_queries = 0
+        for audit in evidence_rows:
+            audit_rows = audit.get("rows")
+            if not isinstance(audit_rows, list):
+                raise RuntimeError(f"malformed LB audit rows: {experiment}")
+            try:
+                query_count = int(audit["query_count"])
+                groups_checked = int(audit["groups_checked"])
+                scanned = int(audit["scanned_groups_checked"])
+                skipped = int(audit["skipped_groups_checked"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise RuntimeError(f"malformed LB audit counts: {experiment}") from error
+            query_keys = {
+                (str(row.get("query_id")), int(row.get("query_position", -1)))
+                for row in audit_rows
+                if isinstance(row, dict)
+            }
+            action_scan = sum(
+                isinstance(row, dict) and row.get("action") == "scan"
+                for row in audit_rows
+            )
+            action_skip = sum(
+                isinstance(row, dict) and row.get("action") == "skip"
+                for row in audit_rows
+            )
+            if (
+                query_count <= 0
+                or groups_checked != len(audit_rows)
+                or (bool(audit_rows) and len(query_keys) != query_count)
+                or scanned != action_scan
+                or skipped != action_skip
+                or scanned + skipped != groups_checked
+            ):
+                raise RuntimeError(f"LB audit count/action mismatch: {experiment}")
+            scope = audit.get("scope")
+            if not isinstance(scope, str) or not scope:
+                raise RuntimeError(f"LB audit scope is missing: {experiment}")
+            scopes.add(scope)
+            total_audits += 1
+            total_queries += query_count
+            total_decisions += groups_checked
+            total_scan += scanned
+            total_skip += skipped
+            experiment_queries += query_count
+            rows.extend(row for row in audit_rows if isinstance(row, dict))
+        if experiment == "sift-initial":
+            main_queries = experiment_queries
+            main_decisions = len(rows)
+        if not rows:
+            output.append(
+                f"| {experiment} | {experiment_queries} | none | 0 | — | — | — |"
+            )
+            continue
         for action in ("scan", "skip"):
             selected = [row for row in rows if row.get("action") == action]
             if not selected:
@@ -516,6 +1056,7 @@ def _geometry_table(audits: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[s
                 "| " + " | ".join(
                     (
                         experiment,
+                        str(experiment_queries),
                         action,
                         str(len(selected)),
                         f"{statistics.median(radius):.6g}",
@@ -524,7 +1065,18 @@ def _geometry_table(audits: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[s
                     )
                 ) + " |"
             )
-    return output
+    if not output or main_queries <= 0:
+        raise RuntimeError("LB geometry audit coverage is incomplete")
+    return output, {
+        "audit_files": total_audits,
+        "audited_query_sets": total_queries,
+        "decisions": total_decisions,
+        "scan_decisions": total_scan,
+        "skip_decisions": total_skip,
+        "main_queries": main_queries,
+        "main_decisions": main_decisions,
+        "scopes": sorted(scopes),
+    }
 
 
 def _break_even(
@@ -544,7 +1096,9 @@ def _break_even(
     )
     build_rows = list(builds.get(experiment, ()))
     build_costs = []
+    packed_build_costs = []
     memory_costs = []
+    combined_memory_costs = []
     for build in build_rows:
         groups = build.get("groups")
         if not isinstance(groups, dict):
@@ -562,16 +1116,150 @@ def _break_even(
         memory_costs.append(
             int(groups.get("member_bytes", 0)) + int(groups.get("metadata_bytes", 0))
         )
+        packed = build.get("native_packed_view")
+        memory = build.get("memory")
+        if not isinstance(packed, dict) or not isinstance(memory, dict):
+            continue
+        packed_build_costs.append(int(packed.get("build_ns", 0)))
+        combined_memory_costs.append(
+            int(groups.get("member_bytes", 0))
+            + int(groups.get("metadata_bytes", 0))
+            + int(memory.get("packed_python_owned_bytes", 0))
+            + int(memory.get("packed_native_owned_bytes", 0))
+        )
     build_ns = None if not build_costs else float(statistics.median(build_costs))
+    packed_build_ns = (
+        None if not packed_build_costs else float(statistics.median(packed_build_costs))
+    )
     memory_bytes = None if not memory_costs else float(statistics.median(memory_costs))
+    combined_memory_bytes = (
+        None
+        if not combined_memory_costs
+        else float(statistics.median(combined_memory_costs))
+    )
     finite = build_ns is not None and saving_ns is not None and saving_ns > 0.0
+    combined_finite = finite and packed_build_ns is not None
     return {
         "incremental_group_build_ns": build_ns,
+        "packed_view_build_ns": packed_build_ns,
         "median_paired_query_saving_ns": saving_ns,
         "q_break_even": (build_ns / saving_ns) if finite else None,
+        "q_break_even_group_plus_packed": (
+            (build_ns + packed_build_ns) / saving_ns if combined_finite else None
+        ),
         "finite": finite,
+        "combined_finite": combined_finite,
+        "paired_session_queries": len(keys),
         "group_memory_bytes": memory_bytes,
+        "group_plus_packed_memory_bytes": combined_memory_bytes,
     }
+
+
+def _main_build_table(
+    builds: Mapping[str, Sequence[Mapping[str, Any]]],
+    cache_audits: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> list[str]:
+    build_rows = list(builds.get("sift-initial", ()))
+    if not build_rows:
+        raise RuntimeError("main build evidence is missing")
+
+    def median_nested(container: str, field: str) -> float:
+        values: list[float] = []
+        for build in build_rows:
+            nested = build.get(container)
+            if not isinstance(nested, dict) or nested.get(field) is None:
+                raise RuntimeError(f"main build metric is missing: {container}.{field}")
+            value = float(nested[field])
+            if not math.isfinite(value) or value < 0:
+                raise RuntimeError(f"main build metric is invalid: {container}.{field}")
+            values.append(value)
+        return float(statistics.median(values))
+
+    center = median_nested("groups", "center_training_ns")
+    assignment = median_nested("groups", "assignment_ns")
+    packing = median_nested("groups", "packing_and_radius_ns")
+    packed_cold = median_nested("native_packed_view", "build_ns")
+    packed_warm = median_nested("native_packed_view", "warm_cache_lookup_ns")
+    group_member = median_nested("memory", "group_member_bytes")
+    group_metadata = median_nested("memory", "group_metadata_bytes_estimate")
+    packed_python = median_nested("memory", "packed_python_owned_bytes")
+    packed_native = median_nested("memory", "packed_native_owned_bytes")
+    rss_change = median_nested("memory", "rss_change_bytes")
+    cached, legacy, cache_ratio, cache_n = _base_cache_metrics(
+        cache_audits, "sift-initial"
+    )
+    cache_stats_rows = []
+    for audit in cache_audits.get("sift-initial", ()):
+        stats = audit.get("cache_stats")
+        if not isinstance(stats, dict):
+            raise RuntimeError("main Base-cache stats are missing")
+        cache_stats_rows.append(stats)
+    if not cache_stats_rows:
+        raise RuntimeError("main Base-cache stats are missing")
+
+    def median_stat(field: str) -> float:
+        values = [float(stats[field]) for stats in cache_stats_rows if field in stats]
+        if len(values) != len(cache_stats_rows) or any(
+            not math.isfinite(value) or value < 0 for value in values
+        ):
+            raise RuntimeError(f"main Base-cache stat is invalid: {field}")
+        return float(statistics.median(values))
+
+    cache_build = median_stat("cache_build_ns")
+    cache_lookup = median_stat("cache_lookup_ns")
+    hits = median_stat("hits")
+    misses = median_stat("misses")
+    build_n = len(build_rows)
+    return [
+        f"| group centers | cold build | {_fmt(center / 1e6)} ms | build n={build_n}; Base-only training |",
+        f"| group assignment | cold build | {_fmt(assignment / 1e6)} ms | build n={build_n} |",
+        f"| group packing/radius | cold build | {_fmt(packing / 1e6)} ms | build n={build_n} |",
+        f"| group total | cold build | {_fmt((center + assignment + packing) / 1e6)} ms | build n={build_n} |",
+        f"| native packed view | cold build | {_fmt(packed_cold / 1e6)} ms | build n={build_n} |",
+        f"| native packed view | warm cache identity lookup | {_fmt(packed_warm / 1e6, 6)} ms | build n={build_n} |",
+        f"| Base visible map | cold cache build | {_fmt(cache_build / 1e6)} ms | audit files n={len(cache_stats_rows)}; misses median={_fmt(misses, 0)} |",
+        f"| Base visible map | cached / legacy p50 | {_fmt(cached)}/{_fmt(legacy)} ms ({_fmt(cache_ratio)}x) | paired audit queries n={cache_n}; hits median={_fmt(hits, 0)}; total lookup median={_fmt(cache_lookup, 0)} ns |",
+        f"| groups | retained memory | {_fmt(group_member + group_metadata, 0)} bytes | member + metadata; build n={build_n} |",
+        f"| packed view | retained memory | {_fmt(packed_python + packed_native, 0)} bytes | Python + native owned; build n={build_n} |",
+        f"| groups + packed view | retained memory scenario | {_fmt(group_member + group_metadata + packed_python + packed_native, 0)} bytes | additive sensitivity scenario; build n={build_n} |",
+        f"| process | RSS change during build | {_fmt(rss_change, 0)} bytes | includes shared Base/Delta/truth/benchmark buffers; not P-only attribution |",
+    ]
+
+
+def _fallback_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    fnp = [row for row in rows if row.get("method_role") in {"F", "N", "P"}]
+    p_rows = [row for row in fnp if row.get("method_role") == "P"]
+    if not fnp or not p_rows:
+        raise RuntimeError("native F/N/P fallback population is missing")
+    invalid = [
+        row
+        for row in fnp
+        if row.get("python_fallback_used") not in {True, False}
+    ]
+    if invalid:
+        raise RuntimeError("native fallback flags are missing/malformed")
+    return {
+        "fnp_rows": len(fnp),
+        "fnp_fallbacks": sum(row.get("python_fallback_used") is True for row in fnp),
+        "p_rows": len(p_rows),
+        "p_fallbacks": sum(row.get("python_fallback_used") is True for row in p_rows),
+    }
+
+
+def _comparison_denominator_text(
+    f_comparison: Mapping[str, Any], a_comparison: Mapping[str, Any]
+) -> str:
+    values: list[str] = []
+    for role, comparison in (("F", f_comparison), ("A", a_comparison)):
+        try:
+            queries = int(comparison["paired_queries"])
+            observations = int(comparison["paired_session_query_observations"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError(f"{role} comparison denominator is missing") from error
+        if queries <= 0 or observations < queries:
+            raise RuntimeError(f"{role} comparison denominator is invalid")
+        values.append(f"{role} {queries}/{observations}")
+    return "; ".join(values)
 
 
 def _rq_result_answers(
@@ -770,6 +1458,12 @@ def _rq_result_answers(
         for value in break_even_results
         if value["finite"] and value["q_break_even"] is not None
     ]
+    combined_break_even_values = [
+        float(value["q_break_even_group_plus_packed"])
+        for value in break_even_results
+        if value["combined_finite"]
+        and value["q_break_even_group_plus_packed"] is not None
+    ]
     n_over_p_text = (
         "—"
         if not n_over_p_values
@@ -788,15 +1482,31 @@ def _rq_result_answers(
         if not finite_break_even_values
         else f"{_fmt(min(finite_break_even_values), 1)}–{_fmt(max(finite_break_even_values), 1)} queries"
     )
+    combined_break_even_text = (
+        "有限値なし"
+        if not combined_break_even_values
+        else f"{_fmt(min(combined_break_even_values), 1)}–{_fmt(max(combined_break_even_values), 1)} queries"
+    )
+    main_query_counts = {
+        len(_query_medians(rows, "sift-initial", method, "api_wall_latency_ns"))
+        for method in main_p_methods
+    }
+    main_n_text = (
+        str(next(iter(main_query_counts))) if len(main_query_counts) == 1 else "condition別"
+    )
     geometry_text = "、".join(geometry_parts) if geometry_parts else "geometry gap evidence なし"
     rq3 = (
-        f"事前指定 main `sift-initial` 内で N/P geomean 範囲={n_over_p_text}、"
+        f"事前指定 main `sift-initial` 内（各 operating pointの "
+        f"session-query n={main_n_text}）で N/P geomean 範囲={n_over_p_text}、"
         f"P の operating-point別 median skipped groups={skipped_text}/{group_total_text}。"
         f"{geometry_text}。"
         f"incremental group build median="
         f"{_fmt(None if not build_costs else statistics.median(build_costs) / 1e6)} ms、"
-        f"F 比の有限 break-even は {len(finite_break_even_values)}/{len(break_even_results)} "
-        f"operating points（{break_even_text}）。"
+        f"packed view を F/P 共通と扱う group-only の F 比有限 break-even は "
+        f"{len(finite_break_even_values)}/{len(break_even_results)} operating points"
+        f"（{break_even_text}）、packed build も P に課す感度分析は "
+        f"{len(combined_break_even_values)}/{len(break_even_results)} points"
+        f"（{combined_break_even_text}）。"
         "他 dataset/secondary axis は層別表の記述値とし、異なる次元・座標尺度の"
         "L2 gap を pooled aggregate しない。これは保存 evidence の記述的対応であり、"
         "単独では勝敗原因を因果確定しない。"
@@ -1208,6 +1918,14 @@ Fresh-final performance gate: **`{final_gate['performance_gate_status']}`**、ve
 """
 
 
+def _verify_final_decision_correctness(
+    decision: Mapping[str, Any], correctness_path: Path
+) -> None:
+    expected = decision.get("correctness_sha256")
+    if not isinstance(expected, str) or expected != file_sha256(correctness_path):
+        raise RuntimeError("final decision is not bound to current correctness evidence")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, type=Path)
@@ -1243,6 +1961,7 @@ def main() -> int:
         validation_summary_path=args.summary,
         validation_gate_path=args.gate,
     )
+    _verify_final_decision_correctness(final_decision, args.correctness)
     rows = list(evidence.rows)
     comparisons = _comparison_lookup(summary)
     methods_by_experiment = summary["methods_by_experiment"]
@@ -1313,7 +2032,15 @@ def main() -> int:
     )
     ablation_rows = _ablation_table(rows, cache_audits, profile)
     quality_rows = _quality_table(rows)
-    geometry_rows = _geometry_table(audits)
+    geometry_rows, geometry_coverage = _geometry_table(audits)
+    delta_sift_rows, delta_gist_rows, delta_counts = _delta_influence_tables(gate)
+    main_latency_rows, main_latency_coverage = _main_latency_scope_table(summary, rows)
+    main_component_rows = _main_component_table(summary, rows)
+    positive_beta_rows, positive_beta_interpretation = _main_positive_beta_table(
+        summary, rows
+    )
+    main_build_rows = _main_build_table(builds, cache_audits)
+    fallback_counts = _fallback_counts(rows)
     rq1_answer, rq2_answer, rq3_answer = _rq_result_answers(
         gate=gate,
         summary=summary,
@@ -1352,6 +2079,7 @@ def main() -> int:
                         f"{_fmt(a_cmp.get('geometric_mean'))} [{_fmt(a_cmp.get('bootstrap_95pct_lower'))}, {_fmt(a_cmp.get('bootstrap_95pct_upper'))}]",
                         _fmt(_n_over_p(rows, experiment, p_method)),
                         f"{_fmt(skipped, 1)} / {_fmt(scanned, 1)}",
+                        _comparison_denominator_text(f_cmp, a_cmp),
                     )
                 ) + " |"
             )
@@ -1377,17 +2105,29 @@ def main() -> int:
                             ),
                             _fmt(
                                 None
+                                if amortization["packed_view_build_ns"] is None
+                                else amortization["packed_view_build_ns"] / 1e6,
+                                3,
+                            ),
+                            _fmt(
+                                None
                                 if amortization["median_paired_query_saving_ns"] is None
                                 else amortization["median_paired_query_saving_ns"] / 1e6,
                                 6,
                             ),
                             q_text,
+                            (
+                                _fmt(amortization["q_break_even_group_plus_packed"], 1)
+                                if amortization["combined_finite"]
+                                else "有限解なし"
+                            ),
+                            str(amortization["paired_session_queries"]),
                             _fmt(amortization["group_memory_bytes"], 0),
+                            _fmt(amortization["group_plus_packed_memory_bytes"], 0),
                         )
                     ) + " |"
                 )
 
-    main_rows = [row for row in table if row.startswith("| sift-initial |")] or table[:1]
     gate_status = str(gate["gate_status"])
     requirements = gate.get("requirements", {})
     integrity_complete = all(
@@ -1398,6 +2138,8 @@ def main() -> int:
             "validation_gate_source_passed"
         )
     )
+    if not integrity_complete:
+        raise RuntimeError("validation integrity requirements are incomplete")
     verdict = str(final_decision["verdict"])
     engineering_decision = str(final_decision["engineering_decision"])
     final_status = str(final_decision["final_status"])
@@ -1434,9 +2176,34 @@ def main() -> int:
         ) + " |"
         for run in bound_runs
     ]
+    gate_reasons = gate.get("reasons")
+    if not isinstance(gate_reasons, list) or not all(
+        isinstance(value, str) and value for value in gate_reasons
+    ):
+        raise RuntimeError("validation gate reasons are missing/malformed")
+    gate_reason_text = ", ".join(f"`{value}`" for value in gate_reasons) or "なし"
+    main_test_query_counts = {
+        int(point["expected_test_queries"])
+        for point in summary.get("operating_points", [])
+        if isinstance(point, dict)
+        and point.get("experiment_id") == "sift-initial"
+        and point.get("expected_test_queries") is not None
+    }
+    if len(main_test_query_counts) != 1 or next(iter(main_test_query_counts)) <= 0:
+        raise RuntimeError("main timing query denominator is missing/inconsistent")
+    main_test_query_count = next(iter(main_test_query_counts))
+    deselected = correctness.get("pytest_deselected")
+    if deselected is None:
+        deselected_text = "bound JSON/JUnit に未保存（数値は主張しない）"
+    elif isinstance(deselected, bool) or not isinstance(deselected, int) or deselected < 0:
+        raise RuntimeError("pytest deselected count is malformed")
+    else:
+        deselected_text = str(deselected)
     content = f"""# Native kernel 再検証報告（Issue #3）
 
 研究全体の事前規定 stopping-rule verdict: **`{verdict}`**、工学的導入判定: **`{engineering_decision}`**（validation gate: **{gate_status}**、final status: **`{final_status}`**）。これは fresh-final holdout estimate ではない。{final_statement}
+
+Validation gate の保存理由: {gate_reason_text}。
 
 本報告は [GitHub Issue #3](https://github.com/wasanemon/Searchability-Obligations/issues/3) の手順に従い、旧 Python 実装の遅さと center-radius pruning 自体の限界を分離して再検証した結果である。ordinary L2 と Faiss の squared-L2 を区別し、全 native 保証経路は [`docs/native_numerics.md`](../docs/native_numerics.md) の interval/error-bound と厳密境界順序を用いた。
 
@@ -1449,24 +2216,58 @@ def main() -> int:
 ## 正しさ gate
 
 - fixed-seed native cases: {correctness.get('fixed_seed_cases')}。
-- pytest: {correctness.get('pytest_testcases')} passed、failures {correctness.get('pytest_failures')}、errors {correctness.get('pytest_errors')}、skipped {correctness.get('pytest_skipped')}。
+- pytest JUnit: executed {correctness.get('pytest_testcases')} passed、failures {correctness.get('pytest_failures')}、errors {correctness.get('pytest_errors')}、skipped {correctness.get('pytest_skipped')}、deselected {deselected_text}。
 - native backend: `{binary.get('backend')}`、shared object SHA-256 `{correctness.get('native_shared_object_sha256')}`。
 - compile flags: `{binary.get('compile_flags')}`。fast-math 無効、FE_TONEAREST 強制、strict `LB > tau-beta`、曖昧境界だけ exact Fraction で再順位付けした。
 - raw native 行の backend/call evidence と beta chain の aggregate failure はそれぞれ {summary['integrity_checks']['native_backend_calls']['failure_count']} / {summary['integrity_checks']['correctness']['failure_count']}。
+- Python fallback は F/N/P raw 行 {fallback_counts['fnp_fallbacks']}/{fallback_counts['fnp_rows']}、そのうち P は {fallback_counts['p_fallbacks']}/{fallback_counts['p_rows']}。
 
 ## Validation 結果
 
-latency は API wall。各 session/query 内で repetition median、session 間で比の幾何平均、query を独立単位として固定 seed の paired bootstrap（{summary['bootstrap_policy']['resamples']} resamples）を用いた。speedup は baseline/P なので 1 より大きいほど P が速い。A の品質不一致行も timing から除外していない。
+latency は API wall。各 session/query 内で repetition median、session 間で比の幾何平均、query を独立単位として固定 seed の paired bootstrap（{summary['bootstrap_policy']['resamples']} resamples）を用いた。speedup は baseline/P なので 1 より大きいほど P が速い。A の品質不一致行も timing から除外していない。`n q/session-q` は paired query 数 / paired process-session-query observation 数である。
 
-| condition | P method | beta (L2) | P p50/p95/p99 ms | F/P geomean [95% CI] | A/P geomean [95% CI] | N/P geomean | median skipped groups / vectors scanned |
-|---|---|---:|---:|---:|---:|---:|---:|
+| condition | P method | beta (L2) | P p50/p95/p99 ms | F/P geomean [95% CI] | A/P geomean [95% CI] | N/P geomean | median skipped groups / vectors scanned | n q/session-q (F; A) |
+|---|---|---:|---:|---:|---:|---:|---:|---|
 {chr(10).join(table)}
 
-主要条件の要約:
+主条件の beta=0 について、3 timing scope を同じ分母で並べる。この validation は process session {main_latency_coverage['process_sessions']} 回、各 query の session 数 {main_latency_coverage['sessions_per_query_min']}–{main_latency_coverage['sessions_per_query_max']}、paired query/session-query は {main_latency_coverage['paired_queries']}/{main_latency_coverage['paired_session_query_observations']}である。したがって CI は query sampling の不確実性は表すが、process/session 間変動は推定しない。
 
-{chr(10).join(main_rows)}
+| scope | F p50/p95/p99 ms | A p50/p95/p99 ms | P(beta=0) p50/p95/p99 ms | F/P geomean [95% CI] | A/P geomean [95% CI] | n q/session-q |
+|---|---:|---:|---:|---:|---:|---:|
+{chr(10).join(main_latency_rows)}
 
-Delta-influence subset は各 comparison の `delta_influence_subset` に同じ query 単位で保存した。A mismatch は `baseline_quality_mismatch_*_retained` と raw `baseline_validation_failure` に残した。
+## Delta-influence subset
+
+Delta neighbor が exact visible top-k に影響する query だけを同じ query-paired bootstrap で再集計した。下表は real/non-degenerate かつ SIFT primary で subset n>0 の gate-eligible 候補を全件（n={delta_counts['sift']}）表示する。subset CI 下端 > 1 は F/P で {delta_counts['sift_f_ci_lower_above_one']}/{delta_counts['sift']}、A/P で {delta_counts['sift_a_ci_lower_above_one']}/{delta_counts['sift']}（A/P の CI 上端 < 1 は {delta_counts['sift_a_ci_upper_below_one']}/{delta_counts['sift']}）。
+
+| condition | P method | beta (L2) | influenced queries n | F/P subset geomean [95% CI] | A/P subset geomean [95% CI] |
+|---|---|---:|---:|---:|---:|
+{chr(10).join(delta_sift_rows)}
+
+GIST は再利用済みの非独立 anchor で gate 非対象のため、SIFT と分けて全 {delta_counts['gist']} operating points を記述する。
+
+| GIST anchor | P method | beta (L2) | influenced queries n | F/P subset geomean [95% CI] | A/P subset geomean [95% CI] |
+|---|---|---:|---:|---:|---:|
+{chr(10).join(delta_gist_rows)}
+
+A mismatch は `baseline_quality_mismatch_*_retained` と raw `baseline_validation_failure` に残した。
+
+## 正の beta の記述的寄与
+
+| P method | requested beta (L2) | session-query n | API p50/p95/p99 ms | beta=0 からの p50/p95/p99 変化 | median skipped groups | median vectors scanned (変化) |
+|---|---:|---:|---:|---:|---:|---:|
+{chr(10).join(positive_beta_rows)}
+
+{positive_beta_interpretation}
+
+
+## 主条件の timing component（p50 ms）
+
+各値は各 session-query 内の repetition median を取った後の p50。`kernel/Δ-search` は native F/N/P では kernel total、A では Delta Flat search、`adaptive/merge` は native adaptive exact または A shortlist exact merge。`other micro` は micro からそれらの重複しない timer を引いた残差である。Base prepare と native query prepare は micro 外だが composed/API の層を明示するため併記する。
+
+| role | method | beta | n session-query | Base prep | native prep | micro | kernel/Δ-search | LB | order | group scan | raw scan | adaptive/merge | receipt | other micro |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+{chr(10).join(main_component_rows)}
 
 `faiss_A_reference` は Faiss の squared-L2 順序を直接使う**非認証**の参考経路であり、RQ2 の A や gate には採用していない。その行は raw と代表 raw export に別 role `A-reference` で保存した。
 
@@ -1474,26 +2275,32 @@ Delta-influence subset は各 comparison の `delta_influence_subset` に同じ 
 
 ## 品質・保証指標
 
-match は同一 `C` の O との ordered key 一致率、recall は全 visible exact top-k に対する median/min、Delta capture は exact top-k に Delta neighbor がある queryだけの median/min（括弧内は該当 query-session 数）である。P の gap は `max observed / max certified / max requested beta`（ordinary L2）で、必ずこの順の非減少 chain を満たすことを integrity gate が確認した。
+match は同一 `C` の O との ordered key 一致率、recall は全 visible exact top-k に対する median/min、Delta capture は exact top-k に Delta neighbor がある queryだけの median/min（括弧内は該当 query-session 数）である。`n` は最初の repetition を代表とした query-session 数。P の gap は `max observed / max certified / max requested beta`（ordinary L2）で、必ずこの順の非減少 chain を満たすことを integrity gate が確認した。
 
-| condition | method | same-C match rate | full exact recall median/min | Delta capture median/min (n) | P gap obs/cert/req max |
-|---|---|---:|---:|---:|---:|
+| condition | method | n query-session | same-C match rate | full exact recall median/min | Delta capture median/min (n) | P gap obs/cert/req max |
+|---|---|---:|---:|---:|---:|---:|
 {chr(10).join(quality_rows)}
 
 ## Geometry audit
 
-各 validation query の全 group decisionについて、保存した厳密 group 最小距離と native `LB` を timing 外で照合した。`exact_min_lower - LB` は下界の緩さであり、大きいほど radius/geometry により判定余地を失っている。scan と skip を分けることで、scan が真に近い群によるものか、下界の緩さによるものかを観察できる。全 audit は completion の ancillary SHA-256 inventory と build の dataset/split ID に一致し、`passed=true` のものだけを集計した。
+全 {geometry_coverage['audit_files']} audit files は、condition ごとの固定 validation/calibration subset（件数は表示）を使い、合計 condition-query sets {geometry_coverage['audited_query_sets']} / {geometry_coverage['decisions']} group decisions（scan {geometry_coverage['scan_decisions']}、skip {geometry_coverage['skip_decisions']}）を timing 外で照合した。主 `sift-initial` は audit {geometry_coverage['main_queries']} queries / {geometry_coverage['main_decisions']} decisions であり、timing の別 test partition {main_test_query_count} queries 全件を audit したものではない。audit scope は `{', '.join(geometry_coverage['scopes'])}`。保存した厳密 group 最小距離と native `LB` を照合し、`exact_min_lower - LB` を下界の緩さとして scan/skip 別に記述する。全 audit は completion の ancillary SHA-256 inventory と build の dataset/split ID に一致し、`passed=true` のものだけを集計した。
 
-| condition | action | decisions | radius median | true group-min L2 median | (true min-LB) median/p95 |
-|---|---|---:|---:|---:|---:|
+| condition | audited queries | action | decisions | radius median | true group-min L2 median | (true min-LB) median/p95 |
+|---|---:|---|---:|---:|---:|---:|
 {chr(10).join(geometry_rows)}
 
 ## Build / memory と限定的 break-even
 
-`Q_break_even = B_extra / (t_F - t_P)` とし、`B_extra` は保存 build manifest の center training + assignment + packing/radius、分母は query-paired API wall 差の中央値で近似した。これは更新頻度や永続化I/Oを含まない限定的な償却目安であり、`t_F - t_P <= 0` なら有限解なしとする。
+主条件の cold/warm construction、cache audit、保持 memory は以下。RSS 差はプロセス全体の high-water/allocator 効果を含み、P 固有 memory とはみなさない。全 query timing は保存済みの warm immutable packed view で、各 condition の timing 前 warmup query 後に実行した。
 
-| condition | P method | B_extra ms | median (t_F-t_P) ms/query | Q_break_even queries | group memory bytes |
-|---|---|---:|---:|---:|---:|
+| object | phase/metric | value | denominator / scope |
+|---|---|---:|---|
+{chr(10).join(main_build_rows)}
+
+`Q_break_even = B_extra / (t_F - t_P)` とし、分母は query-paired API wall 差の中央値で近似した。主列の `B_group` は center training + assignment + group packing/radius だけで、native packed view を F/P 共通の warm prerequisite と扱う。`感度 Q(group+packed)` は packed cold build も全て P に課した場合であり、両者の間に実システムの分担があり得る。更新頻度、永続化 I/O、共通 layout の利用範囲を含まない感度分析であり、`t_F - t_P <= 0` なら有限解なしとする。
+
+| condition | P method | B_group ms | packed cold ms | median (t_F-t_P) ms/query | Q(group-only) | 感度 Q(group+packed) | n paired session-query | group bytes | group+packed bytes |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
 {chr(10).join(break_even_rows)}
 
 ## 段階 ablation と原因分解
@@ -1516,6 +2323,7 @@ match は同一 `C` の O との ordered key 一致率、recall は全 visible e
 - SIFT は Base 100k / Delta 10kを主条件、Delta 0/1k/100k、groups 64/128/512、k 1/10/100を検証した。GIST は memory 制約どおり Base 50k / Delta 5k / d=960。4 synthetic familyも実行した。
 - validation は SIFT query 0..399 の再利用領域だけを読み、事前登録 fresh final holdout 1200..2199 は gate 通過前に読み込んでいない。GIST 全 query は過去使用済みなので独立 holdoutとは呼ばない。
 - API wall は Base candidate preparationからReceipt完成までを全 method の独立randomized passで測り、その後に別順序のmicro passを実行した。composed E2E は共通 Base preparation + method固有 preparation + micro、micro は frozen C/native query preparation後の核である。build、oracle、audit、profileは query timing外。
+- Formal validation は 1 process session のみで、process/session 間分散は validation CI に含まれない。Issue #3 で許された optional post-validation tuning は 0/2 rounds で、measurement partition を使った center/group/beta の再調整は行っていない。
 - shared hostでexclusive CPU reservationはない。静的SIFT/GISTは更新時系列、text embedding、production DBMSを代表しない。
 
 ## Evidence identity

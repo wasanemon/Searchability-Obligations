@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-06 04:08 (Asia/Tokyo)
+Last updated: 2026-09-06 04:06 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -651,6 +651,88 @@ new implementation/test identities in a phase commit, then run `make setup`,
 `make native-test`, and a new non-pooled `make native-validate`. No performance
 tuning, configuration change, holdout access, or result-dependent method
 selection is authorized.
+
+## Issue #3 complete-report and stopping-rule hardening
+
+- The Japanese report generator now derives and prints every gate-eligible
+  SIFT Delta-influence subset with its query count, F/P and A/P paired
+  geomean/CI, plus the two non-independent GIST anchors separately. It also
+  reports the dynamic subset-CI counts rather than requiring a reader to infer
+  them from the table.
+- For the pre-specified main condition it now displays micro, composed E2E, and
+  API wall p50/p95/p99 and paired CIs side by side. Denominators and the fact
+  that validation contains one process session are explicit, so the
+  query-bootstrap CI is not presented as measuring process/session variance.
+  A component table folds repetition within session-query before reporting
+  Base preparation, native preparation, kernel/Delta search, LB, ordering,
+  group/raw scan, adaptive/merge, Receipt, and non-overlapping residual p50s.
+- The generator now reports cold group build, cold/warm packed-view handling,
+  Base visible-map cache measurements, group/packed retained bytes, and a
+  clearly non-attributable process RSS delta. Break-even separates the primary
+  group-only numerator (packed view treated as common to F/P) from a
+  group-plus-packed sensitivity analysis; both include paired denominators.
+- Geometry output now verifies and prints 25 audit validation/calibration
+  queries per condition, 325 condition-query sets and 35,125 decisions for the
+  archived audit input, explicitly distinct from the 200-query timing test
+  partition. Every result/quality/ablation/cache table now carries its relevant
+  denominator. The malformed headerless repetition of main result rows was
+  removed.
+- Positive-beta reporting now derives skip/vector and p50/p95/p99 changes from
+  beta=0, checks every positive-P raw `observed <= certified <= requested`
+  chain, and reports nonzero observed-gap count across all positive-P raw. Its
+  max L2 chain is restricted to `sift-initial` so coordinate-dependent values
+  are not pooled across SIFT/GIST/synthetic data. It explicitly distinguishes
+  reduced scanning with zero observed quality gap from a quality-for-speed
+  trade-off and leaves the A/gate result unchanged.
+- A further independent acceptance audit found two fail-closed gaps. Final
+  authorization previously checked the external correctness prerequisite and
+  native-backend aggregate but not the raw validation correctness aggregate;
+  a broken row-level contract could therefore be misclassified as a negative
+  performance result. `_validate_source_identity` now requires a well-formed,
+  passing, nonempty aggregate with zero failures/examples. Separately, report
+  generation now requires the negative/final decision's `correctness_sha256`
+  to match the current correctness file, preventing a later native-test from
+  silently pairing stale decision evidence with a replacement prerequisite.
+- Correctness JUnit does not preserve pytest's deselected count. The generator
+  does not invent it: the report says the value is unavailable in the bound
+  JSON/JUnit, while exact observed console counts remain in this state file.
+  The public README now shows alternate correctness/JUnit output paths for
+  post-validation acceptance so formal evidence is not overwritten.
+- Focused report and authorization tests completed as `37 passed in 4.13s`.
+  After the final cross-dataset beta-max guard, the same focused suites again
+  completed `37 passed in 4.13s`. `py_compile`, `compileall`, and
+  `git diff --check` passed. The final lightweight command collected 256 tests
+  and reported `254 passed, 2 deselected, 19 warnings in 14.05s`; warnings are
+  the retained optional-PyYAML notice.
+- The new implementation-tree hash is
+  `bb9c65d7060ed8d8dfca3ff157b32aa318181f0a0b793eb816d12987fdd82c4f`
+  and the test-tree hash is
+  `9e67be783618aa1ee1d9a53fcb93d2c0fda727fc29f85fc748cc98d27efbb325`.
+  Native source and shared object remain byte-identical at
+  `bf32578fc0e025531c2ab961aa164bd62c7859b93b96a26328176089f8fa6215`
+  and `eef245f3d812b3e90466ceee8ea0107ee72de72ed81fd706304e390042cd100a`.
+
+Exact verification commands:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  .venv/bin/python -m pytest -q \
+  tests/test_native_final_report.py tests/test_native_final.py
+.venv/bin/python -m compileall -q src scripts tests
+make test
+git diff --check
+.venv/bin/python -c '<print implementation/test/native identities>'
+# Read-only helper invocation against the second archived run verified:
+# SIFT subsets=16, GIST anchors=2, timing n=200/session=1,
+# geometry=325 sets/35,125 decisions, fallback=0/25,872 (P 0/13,536).
+```
+
+Outcome: the complete publication/report and terminal-decision logic are ready
+for a source phase commit. The next resumable commands are `make setup` and
+`make native-test`; correctness must bind the hashes above before a new empty-
+namespace `make native-validate` begins. Any additional executable or test edit
+requires repeating this freeze.
 
 ## Scope and source status
 
