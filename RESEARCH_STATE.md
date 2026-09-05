@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-05 15:20 (Asia/Tokyo)
+Last updated: 2026-09-05 15:27 (Asia/Tokyo)
 
 ## Scope and source status
 
@@ -63,6 +63,12 @@ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
   NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
   .venv/bin/python -m pytest -q tests/test_store.py tests/test_crash.py
 make test
+make test-full
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  .venv/bin/python -m pytest \
+  tests/test_randomized.py::test_fixed_seed_ten_thousand_random_cases -q \
+  --junitxml=results/test_evidence/randomized_10000_final.xml
 make data
 git add README.md reports/REPORT_ja.md
 git commit -m "docs: scaffold Issue #1 research report"
@@ -135,6 +141,14 @@ make test
   one subsequent cross-experiment truth-cache edit; therefore a source-frozen
   final suite/JUnit rerun is still required and will not be inferred from this
   result.
+- After committing the complete implementation and pipeline, the clean tree at
+  Git HEAD `29772a0` and implementation-tree SHA-256 `d2e55be3b4f19ddf...`
+  passed the source-frozen final `make test-full`: `129 passed, 7 warnings in
+  53.34s`. The dedicated fixed-seed 10,000-case rerun passed in `46.88s`.
+  Final JUnit: `results/test_evidence/randomized_10000_final.xml`, SHA-256
+  `187f865e49683a4845ae0ffe67061561057228f863bfd3786972635e01a7dee9`.
+  The warnings are NumPy's optional-PyYAML configuration-display warning and do
+  not change test results; they remain visible rather than being suppressed.
 
 ## Independent audit state
 
@@ -300,14 +314,11 @@ make test
 ## Current resume point
 
 Dataset acquisition, lifecycle hardening, benchmark hardening, and the
-immutable-payload correctness fix are implemented. The latest lightweight
-suite after all benchmark changes reported `128 passed, 1 deselected, 7
-warnings in 6.41s`. Before final real-data timing, create the implementation
-phase commit, run the source-frozen full suite and smoke, and save a new final
-JUnit hash. Then resume with:
+immutable-payload correctness fix are implemented and source-frozen. The final
+full suite and 10,000-case evidence passed as recorded above. Commit the new
+test evidence, then resume with:
 
 ```bash
-make test-full
 make smoke
 make evaluate
 make report

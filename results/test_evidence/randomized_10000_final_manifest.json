@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "executed_at": "2026-09-05T15:25:28+09:00",
+  "command": "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 .venv/bin/python -m pytest tests/test_randomized.py::test_fixed_seed_ten_thousand_random_cases -q --junitxml=results/test_evidence/randomized_10000_final.xml",
+  "preceding_full_suite_command": "make test-full",
+  "preceding_full_suite_outcome": "129 passed, 7 warnings in 53.34s",
+  "fixed_seed": 6202052,
+  "case_count": 10000,
+  "outcome": "passed",
+  "tests": 1,
+  "failures": 0,
+  "errors": 0,
+  "pytest_reported_seconds": 46.88,
+  "junit_suite_seconds": 46.747,
+  "junit_sha256": "187f865e49683a4845ae0ffe67061561057228f863bfd3786972635e01a7dee9",
+  "implementation_tree_sha256": "d2e55be3b4f19ddff046d4cdedbfeafe07ad12ccdf5a9603726eab612a269095",
+  "git_head": "29772a0bc5f2e2aea5928a0535db8ba05807aaaa",
+  "git_worktree_clean_before_test_artifact": true,
+  "evidence_note": "Source-frozen final correctness rerun after all independent audit, immutability, lifecycle, benchmark, and analysis changes."
+}
