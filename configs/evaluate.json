@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "run_name": "texmex-main-and-lean-sweeps",
+  "output_root": "results/runs",
+  "evidence_role": "final",
+  "threads": 1,
+  "warmup_queries": 10,
+  "repetitions": 1,
+  "query_block_size": 25,
+  "method_order_seed": 1161981756646125696,
+  "throughput_queries": 25,
+  "throughput_repetitions": 1,
+  "independent_oracle_queries": 1,
+  "independent_oracle_max_population": 20000,
+  "lb_audit_queries": 25,
+  "experiments": [
+    {
+      "id": "sift-initial-group-build-seed-0",
+      "axis": "initial",
+      "repetitions": 3,
+      "dataset": {"type": "texmex", "name": "sift", "root": "data/raw", "n_base": 100000, "n_delta": 10000, "n_validation": 200, "n_test": 1000},
+      "k": 10, "candidate_count": 64, "n_groups": 128, "raw_pending_count": 100,
+      "center_training_size": 100000, "group_seed": 0, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.01, 0.05, 0.10], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [32, 128, 512]
+    },
+    {
+      "id": "sift-initial-group-build-seed-1",
+      "axis": "group_build_seed",
+      "dataset": {"type": "texmex", "name": "sift", "root": "data/raw", "n_base": 100000, "n_delta": 10000, "n_validation": 200, "n_test": 200},
+      "k": 10, "candidate_count": 64, "n_groups": 128, "raw_pending_count": 100,
+      "center_training_size": 100000, "group_seed": 1, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    },
+    {
+      "id": "sift-initial-group-build-seed-2",
+      "axis": "group_build_seed",
+      "dataset": {"type": "texmex", "name": "sift", "root": "data/raw", "n_base": 100000, "n_delta": 10000, "n_validation": 200, "n_test": 200},
+      "k": 10, "candidate_count": 64, "n_groups": 128, "raw_pending_count": 100,
+      "center_training_size": 100000, "group_seed": 2, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    },
+    {
+      "id": "gist-initial-group-build-seed-0",
+      "axis": "initial",
+      "repetitions": 3,
+      "dataset": {"type": "texmex", "name": "gist", "root": "data/raw", "n_base": 50000, "n_delta": 5000, "n_validation": 200, "n_test": 800},
+      "k": 10, "candidate_count": 64, "n_groups": 128, "raw_pending_count": 50,
+      "center_training_size": 50000, "group_seed": 0, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.01, 0.05, 0.10], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [32, 128, 512]
+    },
+    {
+      "id": "gist-initial-group-build-seed-1",
+      "axis": "group_build_seed",
+      "dataset": {"type": "texmex", "name": "gist", "root": "data/raw", "n_base": 50000, "n_delta": 5000, "n_validation": 200, "n_test": 200},
+      "k": 10, "candidate_count": 64, "n_groups": 128, "raw_pending_count": 50,
+      "center_training_size": 50000, "group_seed": 1, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    },
+    {
+      "id": "gist-initial-group-build-seed-2",
+      "axis": "group_build_seed",
+      "dataset": {"type": "texmex", "name": "gist", "root": "data/raw", "n_base": 50000, "n_delta": 5000, "n_validation": 200, "n_test": 200},
+      "k": 10, "candidate_count": 64, "n_groups": 128, "raw_pending_count": 50,
+      "center_training_size": 50000, "group_seed": 2, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    },
+    {
+      "id": "sift-delta-0",
+      "axis": "delta_size",
+      "dataset": {"type": "texmex", "name": "sift", "root": "data/raw", "n_base": 100000, "n_delta": 0, "n_validation": 200, "n_test": 200},
+      "k": 10, "candidate_count": 64, "n_groups": 128, "raw_pending_count": 0,
+      "center_training_size": 100000, "group_seed": 0, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    },
+    {
+      "id": "sift-delta-1000",
+      "axis": "delta_size",
+      "dataset": {"type": "texmex", "name": "sift", "root": "data/raw", "n_base": 100000, "n_delta": 1000, "n_validation": 200, "n_test": 200},
+      "k": 10, "candidate_count": 64, "n_groups": 128, "raw_pending_count": 10,
+      "center_training_size": 100000, "group_seed": 0, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    },
+    {
+      "id": "sift-groups-16",
+      "axis": "group_count",
+      "dataset": {"type": "texmex", "name": "sift", "root": "data/raw", "n_base": 100000, "n_delta": 10000, "n_validation": 200, "n_test": 200},
+      "k": 10, "candidate_count": 64, "n_groups": 16, "raw_pending_count": 100,
+      "center_training_size": 100000, "group_seed": 0, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    },
+    {
+      "id": "sift-groups-64",
+      "axis": "group_count",
+      "dataset": {"type": "texmex", "name": "sift", "root": "data/raw", "n_base": 100000, "n_delta": 10000, "n_validation": 200, "n_test": 200},
+      "k": 10, "candidate_count": 64, "n_groups": 64, "raw_pending_count": 100,
+      "center_training_size": 100000, "group_seed": 0, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    },
+    {
+      "id": "sift-groups-512",
+      "axis": "group_count",
+      "dataset": {"type": "texmex", "name": "sift", "root": "data/raw", "n_base": 100000, "n_delta": 10000, "n_validation": 200, "n_test": 200},
+      "k": 10, "candidate_count": 64, "n_groups": 512, "raw_pending_count": 100,
+      "center_training_size": 100000, "group_seed": 0, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    },
+    {
+      "id": "sift-k-1",
+      "axis": "k",
+      "dataset": {"type": "texmex", "name": "sift", "root": "data/raw", "n_base": 100000, "n_delta": 10000, "n_validation": 200, "n_test": 200},
+      "k": 1, "candidate_count": 64, "n_groups": 128, "raw_pending_count": 100,
+      "center_training_size": 100000, "group_seed": 0, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    },
+    {
+      "id": "sift-k-100",
+      "axis": "k",
+      "dataset": {"type": "texmex", "name": "sift", "root": "data/raw", "n_base": 100000, "n_delta": 10000, "n_validation": 200, "n_test": 200},
+      "k": 100, "candidate_count": 128, "n_groups": 128, "raw_pending_count": 100,
+      "center_training_size": 100000, "group_seed": 0, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    },
+    {
+      "id": "sift-base-ef32",
+      "axis": "base_hnsw_ef_search",
+      "dataset": {"type": "texmex", "name": "sift", "root": "data/raw", "n_base": 100000, "n_delta": 10000, "n_validation": 200, "n_test": 200},
+      "k": 10, "candidate_count": 64, "n_groups": 128, "raw_pending_count": 100,
+      "center_training_size": 100000, "group_seed": 0, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "base_hnsw_ef_search": 32,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    },
+    {
+      "id": "sift-base-ef512",
+      "axis": "base_hnsw_ef_search",
+      "dataset": {"type": "texmex", "name": "sift", "root": "data/raw", "n_base": 100000, "n_delta": 10000, "n_validation": 200, "n_test": 200},
+      "k": 10, "candidate_count": 64, "n_groups": 128, "raw_pending_count": 100,
+      "center_training_size": 100000, "group_seed": 0, "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05], "positive_beta_min": 1e-12,
+      "base_hnsw_ef_search": 512,
+      "hnsw_m": 32, "hnsw_ef_construction": 200, "hnsw_ef_search": [128, 512]
+    }
+  ]
+}

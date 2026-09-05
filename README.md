@@ -31,7 +31,8 @@ make test-full
 
 The smoke run needs no network. It emits the optimized full-Delta reference,
 pruning with beta=0 and beta>0, the required practical baselines, and the
-no-pruning ablation. It also saves machine-checkable guarantee fields and raw
+no-pruning plus final-interval-recomputation ablations. It also saves
+machine-checkable guarantee fields and raw
 query-method rows. A completed smoke is a pipeline/correctness check, not
 evidence that the method is useful on real data.
 
@@ -48,11 +49,18 @@ benchmarks force Faiss and common BLAS implementations to one thread by
 default. SIFT and especially GIST require several GiB of disk and the configured
 evaluation can run for a long time on one CPU thread.
 
-`make evaluate` is resumable. It selects an incomplete run with the same
-effective config hash, checkpoints every query block atomically, and verifies a
-completed shard before skipping it. The command prints an exact resume command;
-retain its `--run-id`. For a resource-bounded diagnostic (not a substitute for
-the full acceptance run), use the same runner options, for example:
+`make evaluate` executes the main/lean SIFT+GIST matrix and then the isolated
+Delta=100,000 SIFT condition. Both are resumable: the runner selects an
+incomplete run with the same effective config hash, checkpoints every query
+block atomically, and verifies a completed shard before skipping it. The main
+SIFT/GIST conditions use 1,000/800 test queries and three timing repetitions;
+the one-axis and group-build-seed sweeps explicitly use 200 queries and one
+repetition. The exact matrix and the reason the heavy condition is isolated are
+in [`configs/README.md`](configs/README.md).
+
+The command prints an exact resume command; retain its `--run-id`. For a
+resource-bounded diagnostic (not a substitute for the configured final runs),
+use the same runner options, for example:
 
 ```bash
 .venv/bin/python scripts/run_experiment.py \
@@ -60,8 +68,9 @@ the full acceptance run), use the same runner options, for example:
   --max-experiments 1 --max-test-queries 25 --max-repetitions 1
 ```
 
-Limits become part of the effective config and therefore produce a different
-config hash. Never report such a reduced run as the full configured sweep.
+Limits become part of the effective config, produce a different config hash,
+and automatically change `evidence_role` from `final` to `calibration`. Never
+report such a reduced run as the configured final sweep.
 Full commands, observed failures, and the current exact resume point are in
 [`RESEARCH_STATE.md`](RESEARCH_STATE.md).
 
