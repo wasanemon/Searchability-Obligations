@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "executed_at": "2026-09-05T13:54:07+09:00",
+  "command": "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 .venv/bin/python -m pytest tests/test_randomized.py::test_fixed_seed_ten_thousand_random_cases -q --junitxml=results/test_evidence/randomized_10000.xml",
+  "fixed_seed": 6202052,
+  "case_count": 10000,
+  "outcome": "passed",
+  "tests": 1,
+  "failures": 0,
+  "errors": 0,
+  "pytest_reported_seconds": 35.30,
+  "junit_sha256": "ac4640c4af331bb8460ed3372108dde8145ee2dac3f37729e6d93c2f71c4848e"
+}

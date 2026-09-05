@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-05 (Asia/Tokyo)
+Last updated: 2026-09-05 13:58 (Asia/Tokyo)
 
 ## Scope and source status
 
@@ -39,7 +39,42 @@ python3 -m venv .venv
   pytest==9.1.1 hypothesis==6.167.1 matplotlib==3.10.8
 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venv/bin/python <Faiss add/search smoke>
 .venv/bin/python -m pip freeze
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  .venv/bin/python -m pytest tests/test_numerics.py tests/test_search.py \
+  tests/test_randomized.py -m 'not evaluation' -q
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  .venv/bin/python -m pytest \
+  tests/test_randomized.py::test_fixed_seed_ten_thousand_random_cases -q \
+  --junitxml=results/test_evidence/randomized_10000.xml
+.venv/bin/python scripts/download_datasets.py --config configs/data.json --only sift
 ```
+
+## Executed correctness results
+
+- Independent-oracle/core lightweight suite: `60 passed, 1 deselected in
+  1.35s` (agent rerun on the current core).
+- Required fixed-seed randomized evaluation: exactly 10,000 cases, `1 passed in
+  35.30s` in the recorded run. JUnit:
+  `results/test_evidence/randomized_10000.xml`; SHA-256
+  `ac4640c4af331bb8460ed3372108dde8145ee2dac3f37729e6d93c2f71c4848e`.
+- Explicit counterexample/boundary/core subset after the radius-integrity fix:
+  `63 passed in 0.64s`.
+- No contract violation has been observed. This is evidence for the stated
+  finite-input implementation, not a proof of novelty or universal usefulness.
+
+## Dataset acquisition state
+
+- TEXMEX's historical HTTP archive paths returned HTTP 404. The official page
+  currently links `ftp://ftp.irisa.fr/local/texmex/corpus/`; its MD5SUM file and
+  CC0 notice were inspected instead of silently changing provenance.
+- SIFT1M download/extraction completed. Archive is 168,280,445 bytes, official
+  MD5 `b23d1b3b2ee8469d819b61ca900ef0ed`, observed SHA-256
+  `92f1270c5e3a0cb46b89983e72b0511e4df065c31a9fa0276d8c9b1fca5bc81a`.
+  Per-file hashes are in `data/manifests/sift.json`; large files are ignored.
+- GIST1M (official size 2,740,172,684 bytes) is currently downloading. Do not
+  mark it acquired until official MD5 `31185e0f00854f74d27e8ad8d52628a9`
+  and extraction manifests have passed.
 
 ## External constraints and observed failures
 
@@ -56,9 +91,10 @@ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venv/bin/python <Faiss add/search smok
 ## Phase checklist
 
 - [x] Inspect empty history, resources, network constraints, and Faiss compatibility.
-- [ ] Define/prove the contract, numerical mode, and independent oracle.
-- [ ] Implement insert-only HNSW + Delta methods and all required baselines.
-- [ ] Run boundary, counterexample, and fixed-seed 10,000-case tests.
+- [x] Define/prove the contract, numerical mode, and independent oracle.
+- [x] Implement insert-only HNSW + Delta kernel and required baseline index types.
+- [x] Run boundary and fixed-seed 10,000-case tests; lifecycle-specific
+      counterexamples remain tied to the lifecycle phase.
 - [ ] Run offline smoke and preserve per-query raw evidence.
 - [ ] Acquire and evaluate SIFT plus GIST or a documented public replacement.
 - [ ] Implement and test SQLite obligations, MVCC snapshots, crash recovery,
@@ -69,14 +105,21 @@ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 .venv/bin/python <Faiss add/search smok
 
 ## Current resume point
 
-The dependency compatibility check is complete. Continue with the contract,
-numerics, oracle, and insert-only kernel, then run:
+Contract/oracle/kernel correctness is complete at the current revision. Finish
+the in-progress GIST download, benchmark harness, and lifecycle reference, then
+run:
 
 ```bash
-make setup
 make test
+make smoke
 ```
 
-Do not start final real-data timing until correctness tests report zero contract
-violations.
+If interrupted during GIST acquisition, resume with:
 
+```bash
+.venv/bin/python scripts/download_datasets.py --config configs/data.json --only gist
+```
+
+The `.part` file is retained and the downloader requests a byte range when the
+server supports it. Do not start final real-data timing if any new correctness
+test reports a contract violation.
