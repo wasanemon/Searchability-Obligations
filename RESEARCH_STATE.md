@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-06 04:06 (Asia/Tokyo)
+Last updated: 2026-09-06 04:10 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -733,6 +733,56 @@ for a source phase commit. The next resumable commands are `make setup` and
 `make native-test`; correctness must bind the hashes above before a new empty-
 namespace `make native-validate` begins. Any additional executable or test edit
 requires repeating this freeze.
+
+## Issue #3 final-report source-frozen native correctness gate
+
+- The complete-report and stopping-rule phase was committed as `b01c883` with
+  message `fix: complete native evidence reporting (refs #1, #3)`. The tracked
+  tree was clean at full commit
+  `b01c883e92998ea4d8f69b7756e61e6131265177`, with implementation/test hashes
+  `bb9c65d7060ed8d8dfca3ff157b32aa318181f0a0b793eb816d12987fdd82c4f` /
+  `9e67be783618aa1ee1d9a53fcb93d2c0fda727fc29f85fc748cc98d27efbb325`.
+- `make setup` completed at that commit. Sandbox DNS probes for pinned
+  pip/setuptools/wheel again emitted five retry warnings per package, but every
+  pinned dependency was already installed. The editable native wheel rebuilt
+  and installed successfully; environment/Faiss HNSW smoke passed, Git
+  porcelain was empty, and all five thread variables plus Faiss were 1. The
+  rebuilt native shared object remained byte-identical at
+  `eef245f3d812b3e90466ceee8ea0107ee72de72ed81fd706304e390042cd100a`,
+  matched source
+  `bf32578fc0e025531c2ab961aa164bd62c7859b93b96a26328176089f8fa6215`,
+  and reported enforced rounding mode.
+- Formal `make native-test` collected 256 tests and selected 255 under the
+  declared `not evaluation or native_fixed_seed` expression. It completed
+  `255 passed, 1 deselected, 20 warnings in 67.51s`, including exactly 10,000
+  fixed-seed native cases and all new report/final fail-closed regressions.
+  Failures, errors, and skips were zero; warnings remain the optional-PyYAML
+  and xunit2 `record_property` notices.
+- The regenerated correctness JSON is `status=passed`, has no failure reason,
+  and binds commit `b01c883e92998ea4d8f69b7756e61e6131265177`, the implementation
+  and test hashes above, and the native shared object. Its SHA-256 is
+  `dd2cd9b1e50b4202e2d39e39acc36b48a317fdc8908acff6630bc3a56c0e22d5`;
+  the JUnit SHA-256 is
+  `e066c863c950b62824b32fab8c80d3783cc86015d196abf8951023b2c06c4dba`.
+
+Exact commands:
+
+```bash
+make setup
+.venv/bin/python -c '<assert native source/SO/rounding identity>'
+make native-test
+jq '{status,fixed_seed_cases,pytest_testcases,pytest_failures,pytest_errors,\
+pytest_skipped,implementation_tree_sha256,test_tree_sha256,\
+native_shared_object_sha256,git_commit,failure_reasons}' \
+  results/native_recheck_evidence/native_correctness.json
+sha256sum results/native_recheck_evidence/native_correctness.json \
+  results/native_recheck_evidence/native_correctness_junit.xml
+```
+
+Outcome: source-frozen correctness passed with actual native execution. The
+next resumable command is `make native-validate`; the validation namespace is
+empty and superseded runs remain outside it. No executable, test, config,
+policy, holdout, or correctness file may change during the formal run.
 
 ## Scope and source status
 
