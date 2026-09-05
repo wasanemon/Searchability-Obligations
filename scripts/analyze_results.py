@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 from datetime import datetime, timezone
 import io
@@ -80,13 +81,67 @@ def _load_rows(run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]
             raise ValueError(f"raw row count mismatch: {raw_path}")
         raw_files.append(
             {
-                "path": str(raw_path),
+                "path": str(entry["path"]),
                 "sha256": observed_hash,
                 "rows": count,
+                "bytes": raw_path.stat().st_size,
                 "block_key": block_key,
             }
         )
     return rows, raw_files
+
+
+def _validate_completed_run(
+    run_dir: Path,
+    manifest: Mapping[str, Any],
+    run_id: str,
+    config_hash: str,
+) -> dict[str, Any]:
+    """Fail closed unless the atomic completion receipt binds all run identities."""
+
+    completion_path = run_dir / "COMPLETED.json"
+    checkpoint_path = run_dir / "checkpoint.json"
+    effective_path = run_dir / "effective_config.json"
+    manifest_path = run_dir / "run_manifest.json"
+    completion = _read_object(completion_path)
+    checkpoint = _read_object(checkpoint_path)
+    implementation_hash = manifest.get("implementation_tree_sha256")
+    identities = {
+        "completion run_id": (completion.get("run_id"), run_id),
+        "completion config_hash": (completion.get("config_hash"), config_hash),
+        "completion implementation_tree_sha256": (
+            completion.get("implementation_tree_sha256"),
+            implementation_hash,
+        ),
+        "checkpoint run_id": (checkpoint.get("run_id"), run_id),
+        "checkpoint config_hash": (checkpoint.get("config_hash"), config_hash),
+        "checkpoint implementation_tree_sha256": (
+            checkpoint.get("implementation_tree_sha256"),
+            implementation_hash,
+        ),
+    }
+    for label, (observed, expected) in identities.items():
+        if observed != expected:
+            raise ValueError(f"{label} mismatch in {run_dir}")
+    if completion.get("checkpoint_sha256") != file_sha256(checkpoint_path):
+        raise ValueError(f"completion checkpoint hash mismatch in {run_dir}")
+    if completion.get("run_manifest_sha256") != file_sha256(manifest_path):
+        raise ValueError(f"completion run-manifest hash mismatch in {run_dir}")
+    completed_blocks = checkpoint.get("completed_blocks")
+    if not isinstance(completed_blocks, dict):
+        raise ValueError(f"malformed completed checkpoint in {run_dir}")
+    count = len(completed_blocks)
+    if (
+        manifest.get("status") != "completed"
+        or int(manifest.get("completed_blocks", -1)) != count
+        or int(manifest.get("total_blocks", -1)) != count
+        or int(completion.get("raw_shards", -1)) != count
+    ):
+        raise ValueError(f"completion block/status mismatch in {run_dir}")
+    effective = _read_object(effective_path)
+    if object_sha256(effective) != config_hash:
+        raise ValueError(f"effective-config hash mismatch in {run_dir}")
+    return completion
 
 
 def _numbers(rows: Iterable[Mapping[str, Any]], key: str) -> list[float]:
@@ -126,9 +181,9 @@ def _distribution(values: Sequence[float]) -> dict[str, Any]:
     }
 
 
-def _per_query_medians(
+def _per_query_median_map(
     rows: Sequence[Mapping[str, Any]], key: str
-) -> list[float]:
+) -> dict[tuple[int, int], float]:
     grouped: dict[tuple[int, int], list[float]] = {}
     for row in rows:
         value = row.get(key)
@@ -138,7 +193,16 @@ def _per_query_medians(
         if math.isfinite(converted):
             identity = (int(row["query_id"]), int(row.get("query_position", -1)))
             grouped.setdefault(identity, []).append(converted)
-    return [float(np.median(values)) for _, values in sorted(grouped.items())]
+    return {
+        identity: float(np.median(values))
+        for identity, values in sorted(grouped.items())
+    }
+
+
+def _per_query_medians(
+    rows: Sequence[Mapping[str, Any]], key: str
+) -> list[float]:
+    return list(_per_query_median_map(rows, key).values())
 
 
 def _aggregate_group(
@@ -150,6 +214,9 @@ def _aggregate_group(
     run_id, experiment_id, method = key
     method_kind = str(rows[0].get("method_kind"))
     is_truth_generation = method_kind in {"certified_full", "full_exact_truth"}
+    unique_queries = {
+        (int(row["query_id"]), int(row.get("query_position", -1))) for row in rows
+    }
     end_to_end_requests = _numbers(rows, "end_to_end_latency_ns")
     uncached_truth_rows = [row for row in rows if not row.get("truth_cache_hit", False)]
     truth_generation_requests = _numbers(
@@ -163,24 +230,77 @@ def _aggregate_group(
     micro = _per_query_medians(rows, "micro_latency_ns")
     performance_end_to_end = [] if is_truth_generation else end_to_end
     performance_micro = [] if is_truth_generation else micro
-    recalls = _numbers(rows, "recall_at_k_exact_full_visible")
-    reference_recalls = _numbers(rows, "recall_at_k_same_c_reference")
-    id_differences = _numbers(rows, "id_symmetric_difference_exact")
-    rank_differences = _numbers(rows, "rank_position_difference_exact")
-    vectors = _numbers(rows, "vectors_scanned_or_read")
-    observed = _numbers(rows, "observed_beta_upper_l2")
-    certified = _numbers(rows, "certified_beta_l2")
-    requested = _numbers(rows, "requested_beta_l2")
-    groups_scanned = sum(_numbers(rows, "groups_scanned"))
-    groups_skipped = sum(_numbers(rows, "groups_skipped"))
-    delta_rows = [row for row in rows if row.get("delta_in_same_c_reference_topk")]
-    non_delta_rows = [row for row in rows if not row.get("delta_in_same_c_reference_topk")]
-    fallbacks = sum(bool(row.get("fallback")) for row in rows)
+    recalls = _per_query_medians(rows, "recall_at_k_exact_full_visible")
+    reference_recalls = _per_query_medians(rows, "recall_at_k_same_c_reference")
+    id_differences = _per_query_medians(rows, "id_symmetric_difference_exact")
+    rank_differences = _per_query_medians(rows, "rank_position_difference_exact")
+    vectors = _per_query_medians(rows, "vectors_scanned_or_read")
+    distance_evaluations = _per_query_medians(rows, "distance_evaluations")
+    exact_boundary_rechecks = _per_query_medians(rows, "exact_boundary_rechecks")
+    raw_pending_scanned = _per_query_medians(rows, "raw_pending_scanned")
+    visibility_rejections = _per_query_medians(rows, "visibility_rejections")
+    tau_returned = _per_query_medians(rows, "tau_returned_l2")
+    min_skipped_lb = _per_query_medians(rows, "min_skipped_lb_l2")
+    observed = _per_query_medians(rows, "observed_beta_upper_l2")
+    certified = _per_query_medians(rows, "certified_beta_l2")
+    requested = _per_query_medians(rows, "requested_beta_l2")
+    groups_scanned_values = _per_query_medians(rows, "groups_scanned")
+    groups_skipped_values = _per_query_medians(rows, "groups_skipped")
+    groups_scanned = sum(groups_scanned_values)
+    groups_skipped = sum(groups_skipped_values)
+    delta_exact_neighbor_counts = _per_query_medians(
+        rows, "delta_exact_neighbor_count"
+    )
+    delta_exact_neighbors_captured_values = _per_query_medians(
+        rows, "delta_exact_neighbors_captured"
+    )
+    delta_exact_neighbor_count = sum(delta_exact_neighbor_counts)
+    delta_exact_neighbors_captured = sum(delta_exact_neighbors_captured_values)
+    delta_capture_rates = _per_query_medians(
+        rows, "delta_exact_neighbor_capture_rate"
+    )
+    delta_identities = {
+        (int(row["query_id"]), int(row.get("query_position", -1)))
+        for row in rows
+        if row.get("delta_in_same_c_reference_topk")
+    }
+    end_to_end_by_query = _per_query_median_map(rows, "end_to_end_latency_ns")
+    recall_by_query = _per_query_median_map(
+        rows, "recall_at_k_exact_full_visible"
+    )
+    delta_latency_values = [
+        end_to_end_by_query[identity]
+        for identity in delta_identities
+        if identity in end_to_end_by_query
+    ]
+    delta_recall_values = [
+        recall_by_query[identity]
+        for identity in delta_identities
+        if identity in recall_by_query
+    ]
+    fallbacks_by_query: dict[tuple[int, int], set[str]] = {}
+    fallback_requests = sum(bool(row.get("fallback")) for row in rows)
+    fallback_reason_request_counts: dict[str, int] = {}
+    for row in rows:
+        if not row.get("fallback"):
+            continue
+        reason = str(row.get("fallback_reason") or "unspecified")
+        identity = (int(row["query_id"]), int(row.get("query_position", -1)))
+        fallbacks_by_query.setdefault(identity, set()).add(reason)
+        fallback_reason_request_counts[reason] = (
+            fallback_reason_request_counts.get(reason, 0) + 1
+        )
+    fallback_reason_counts: dict[str, int] = {}
+    for reasons in fallbacks_by_query.values():
+        for reason in reasons:
+            fallback_reason_counts[reason] = fallback_reason_counts.get(reason, 0) + 1
     violations = sum(bool(row.get("contract_violation")) for row in rows)
     baseline_failures = sum(bool(row.get("baseline_validation_failure")) for row in rows)
-    unique_queries = {
-        (int(row["query_id"]), int(row.get("query_position", -1))) for row in rows
-    }
+    non_delta_latency_values = [
+        end_to_end_by_query[identity]
+        for identity in unique_queries - delta_identities
+        if identity in end_to_end_by_query
+    ]
     repetitions = {int(row.get("repetition", 0)) for row in rows}
     timing_keys = sorted(
         {
@@ -254,30 +374,53 @@ def _aggregate_group(
         "mean_exact_id_symmetric_difference": _mean(id_differences),
         "mean_exact_rank_position_difference": _mean(rank_differences),
         "mean_vectors_scanned_or_read": _mean(vectors),
+        "mean_distance_evaluations": _mean(distance_evaluations),
+        "mean_exact_boundary_rechecks": _mean(exact_boundary_rechecks),
+        "mean_raw_pending_scanned": _mean(raw_pending_scanned),
+        "mean_visibility_rejections": _mean(visibility_rejections),
         "groups_scanned_total": groups_scanned,
         "groups_skipped_total": groups_skipped,
+        "mean_groups_scanned": _mean(groups_scanned_values),
+        "mean_groups_skipped": _mean(groups_skipped_values),
         "group_skip_rate": _rate(groups_skipped, groups_scanned + groups_skipped),
-        "fallback_count": fallbacks,
-        "fallback_rate": _rate(fallbacks, len(rows)),
+        "fallback_count": len(fallbacks_by_query),
+        "fallback_rate": _rate(len(fallbacks_by_query), len(unique_queries)),
+        "fallback_reason_counts": dict(sorted(fallback_reason_counts.items())),
+        "fallback_request_count": fallback_requests,
+        "fallback_request_rate": _rate(fallback_requests, len(rows)),
+        "fallback_reason_request_counts": dict(
+            sorted(fallback_reason_request_counts.items())
+        ),
         "contract_violation_count": violations,
         "baseline_validation_failure_count": baseline_failures,
+        "tau_returned_l2": _distribution(tau_returned),
+        "min_skipped_lb_l2": _distribution(min_skipped_lb),
+        "requested_beta_l2": _distribution(requested),
+        "certified_beta_l2": _distribution(certified),
+        "observed_beta_upper_l2": _distribution(observed),
         "requested_beta_l2_min": min(requested) if requested else None,
         "requested_beta_l2_max": max(requested) if requested else None,
         "certified_beta_l2_max": max(certified) if certified else None,
         "observed_beta_upper_l2_max": max(observed) if observed else None,
-        "delta_influence_query_fraction": _rate(len(delta_rows), len(rows)),
+        "delta_exact_neighbor_count_total": delta_exact_neighbor_count,
+        "delta_exact_neighbors_captured_total": delta_exact_neighbors_captured,
+        "delta_exact_neighbor_capture_rate": _rate(
+            delta_exact_neighbors_captured, delta_exact_neighbor_count
+        ),
+        "delta_exact_neighbor_capture_rate_macro": _mean(delta_capture_rates),
+        "delta_influence_query_fraction": _rate(
+            len(delta_identities), len(unique_queries)
+        ),
         "delta_influence_end_to_end_p50_ms": (
             None
-            if not delta_rows
-            else _quantile(_numbers(delta_rows, "end_to_end_latency_ns"), 0.50) / 1e6
+            if not delta_latency_values
+            else _quantile(delta_latency_values, 0.50) / 1e6
         ),
-        "delta_influence_mean_exact_recall": _mean(
-            _numbers(delta_rows, "recall_at_k_exact_full_visible")
-        ),
+        "delta_influence_mean_exact_recall": _mean(delta_recall_values),
         "non_delta_end_to_end_p50_ms": (
             None
-            if not non_delta_rows
-            else _quantile(_numbers(non_delta_rows, "end_to_end_latency_ns"), 0.50) / 1e6
+            if not non_delta_latency_values
+            else _quantile(non_delta_latency_values, 0.50) / 1e6
         ),
         "component_timing_mean_ns": component_means,
         "p99_sample_warning": (
@@ -512,6 +655,11 @@ def analyze(
                 }
             )
             continue
+        completion = (
+            _validate_completed_run(run_dir, manifest, run_id, config_hash)
+            if complete
+            else None
+        )
         rows, files = _load_rows(run_dir)
         effective_path = run_dir / "effective_config.json"
         if effective_path.is_file():
@@ -531,14 +679,21 @@ def analyze(
                 raise ValueError(f"raw implementation identity mismatch in {run_dir}")
         run_complete[run_id] = complete
         all_rows.extend(rows)
-        raw_files.extend(files)
+        raw_files.extend({"run_id": run_id, **file} for file in files)
         runs.append(
             {
                 "run_dir": str(run_dir),
                 "run_id": run_id,
                 "config_hash": config_hash,
+                "implementation_tree_sha256": manifest.get(
+                    "implementation_tree_sha256"
+                ),
                 "status": manifest.get("status"),
                 "complete_marker": complete,
+                "completion": completion,
+                "completion_marker_sha256": (
+                    file_sha256(run_dir / "COMPLETED.json") if complete else None
+                ),
                 "dataset_hashes": manifest.get("dataset_hashes", {}),
                 "split_ids": manifest.get("split_ids", {}),
                 "completed_blocks": manifest.get("completed_blocks", 0),
@@ -600,17 +755,30 @@ def analyze(
     _add_paired_speedups(summaries, grouped)
 
     lb_by_experiment: dict[str, list[float]] = {}
+    reference_tau_by_experiment: dict[str, list[dict[str, Any]]] = {}
     for row in all_rows:
         values = row.get("lb_lower_values_l2")
         if values:
             key = f"{row['run_id']}/{row['experiment_id']}"
             lb_by_experiment.setdefault(key, []).extend(float(value) for value in values)
+        if row.get("method") == "certified_full_delta_reference":
+            key = f"{row['run_id']}/{row['experiment_id']}"
+            reference_tau_by_experiment.setdefault(key, []).append(row)
     distributions = {
         key: {
             "lb_lower_l2": _distribution(lb_by_experiment.get(key, [])),
+            "same_c_reference_tau_l2": _distribution(
+                _per_query_medians(
+                    reference_tau_by_experiment.get(key, []), "tau_returned_l2"
+                )
+            ),
             "group_radius_upper_l2": _distribution(radii_by_experiment.get(key, [])),
         }
-        for key in sorted(set(lb_by_experiment).union(radii_by_experiment))
+        for key in sorted(
+            set(lb_by_experiment)
+            .union(radii_by_experiment)
+            .union(reference_tau_by_experiment)
+        )
     }
     violation_rows = [row for row in all_rows if row.get("contract_violation")]
     baseline_failure_rows = [
@@ -662,6 +830,44 @@ def analyze(
             "listed but excluded from every aggregate."
         ),
     }
+
+
+def immutable_evidence(summary: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a path- and timestamp-independent snapshot of analyzed evidence."""
+
+    payload = copy.deepcopy(dict(summary))
+    payload.pop("generated_at_utc", None)
+    payload.pop("input", None)
+    for run in payload.get("runs", []):
+        run.pop("run_dir", None)
+    for run in payload.get("excluded_incomplete_runs", []):
+        run.pop("run_dir", None)
+    payload["evidence_schema_version"] = 1
+    payload["reproduction_note"] = (
+        "Deterministic projection of the checksum-verified final-role analysis; "
+        "local paths and analysis timestamps are intentionally omitted."
+    )
+    return payload
+
+
+def write_immutable_evidence(
+    summary_path: Path,
+    manifest_path: Path,
+    summary: Mapping[str, Any],
+) -> None:
+    payload = immutable_evidence(summary)
+    atomic_write_json(summary_path, payload)
+    atomic_write_json(
+        manifest_path,
+        {
+            "schema_version": 1,
+            "artifact": summary_path.name,
+            "bytes": summary_path.stat().st_size,
+            "sha256": file_sha256(summary_path),
+            "run_ids": [run["run_id"] for run in payload.get("runs", [])],
+            "totals": payload.get("totals", {}),
+        },
+    )
 
 
 def _flatten_summary(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -855,12 +1061,13 @@ def japanese_report(summary: Mapping[str, Any], figures: Sequence[Path]) -> str:
             )
         )
 
-    lines.extend(["", "## LB と radius の保存分布", ""])
+    lines.extend(["", "## LB・tau・radius の保存分布", ""])
     for identity, distributions in summary["distributions"].items():
         lb = distributions["lb_lower_l2"]
+        tau = distributions["same_c_reference_tau_l2"]
         radius = distributions["group_radius_upper_l2"]
         lines.append(
-            f"- `{identity}`: LB n={lb['count']}, p50={_fmt(lb['p50'])}, p95={_fmt(lb['p95'])}; radius n={radius['count']}, p50={_fmt(radius['p50'])}, p95={_fmt(radius['p95'])}"
+            f"- `{identity}`: non-timed audit LB n={lb['count']}, p50={_fmt(lb['p50'])}, p95={_fmt(lb['p95'])}; same-C reference tau n={tau['count']}, p50={_fmt(tau['p50'])}, p95={_fmt(tau['p95'])}; radius n={radius['count']}, p50={_fmt(radius['p50'])}, p95={_fmt(radius['p95'])}"
         )
 
     lines.extend(
@@ -906,7 +1113,21 @@ def main() -> int:
         choices=("final", "calibration", "obsolete", "legacy_unspecified"),
         help="Include only this manifest evidence role (repeatable)",
     )
+    parser.add_argument(
+        "--immutable-evidence",
+        type=Path,
+        help="Write a deterministic, path-independent evidence snapshot",
+    )
+    parser.add_argument(
+        "--evidence-manifest",
+        type=Path,
+        help="Write the SHA-256 manifest for --immutable-evidence",
+    )
     args = parser.parse_args()
+    if (args.immutable_evidence is None) != (args.evidence_manifest is None):
+        parser.error(
+            "--immutable-evidence and --evidence-manifest must be supplied together"
+        )
     output = args.output or args.input / "analysis"
     output.mkdir(parents=True, exist_ok=True)
     summary = analyze(
@@ -919,6 +1140,12 @@ def main() -> int:
     atomic_write_bytes(
         args.report, japanese_report(summary, figures).encode("utf-8")
     )
+    if args.immutable_evidence is not None and args.evidence_manifest is not None:
+        write_immutable_evidence(
+            args.immutable_evidence,
+            args.evidence_manifest,
+            summary,
+        )
     print(
         json.dumps(
             {
@@ -926,6 +1153,11 @@ def main() -> int:
                 "summary_csv": str(output / "summary.csv"),
                 "report": str(args.report),
                 "figures": [str(path) for path in figures],
+                "immutable_evidence": (
+                    None
+                    if args.immutable_evidence is None
+                    else str(args.immutable_evidence)
+                ),
                 "totals": summary["totals"],
             },
             ensure_ascii=False,

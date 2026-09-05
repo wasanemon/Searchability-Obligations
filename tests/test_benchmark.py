@@ -9,7 +9,7 @@ import pytest
 import numpy as np
 
 import searchability.benchmark as benchmark_module
-from searchability.artifacts import file_sha256
+from searchability.artifacts import atomic_write_json, file_sha256
 from searchability.baselines import PreparedFaissIndex
 from searchability.benchmark import (
     CompletedRunError,
@@ -215,6 +215,10 @@ def test_full_harness_reuses_one_candidate_object_and_writes_all_evidence(
             str(figures),
             "--evidence-role",
             "final",
+            "--immutable-evidence",
+            str(tmp_path / "final-evidence.json"),
+            "--evidence-manifest",
+            str(tmp_path / "final-evidence-manifest.json"),
         ],
         check=False,
         capture_output=True,
@@ -238,6 +242,26 @@ def test_full_harness_reuses_one_candidate_object_and_writes_all_evidence(
     ]
     assert measured_summaries
     assert all(row["end_to_end_actual_batch_qps"]["count"] == 1 for row in measured_summaries)
+    pruning_summary = next(
+        row
+        for row in summary["method_summaries"]
+        if row["method"] == "group_pruning_beta0"
+    )
+    assert pruning_summary["tau_returned_l2"]["count"] > 0
+    assert pruning_summary["delta_exact_neighbor_count_total"] >= 0
+    assert pruning_summary["fallback_reason_counts"] == {}
+    assert pruning_summary["mean_groups_scanned"] is not None
+    assert pruning_summary["mean_exact_boundary_rechecks"] is not None
+    evidence = json.loads((tmp_path / "final-evidence.json").read_text())
+    assert "generated_at_utc" not in evidence
+    assert "input" not in evidence
+    assert all("run_dir" not in run for run in evidence["runs"])
+    evidence_manifest = json.loads(
+        (tmp_path / "final-evidence-manifest.json").read_text()
+    )
+    assert evidence_manifest["sha256"] == file_sha256(
+        tmp_path / "final-evidence.json"
+    )
     assert (output / "summary.csv").is_file()
     assert "保存済み JSONL" in report.read_text()
     assert (figures / "latency_quantiles.png").is_file()
@@ -306,6 +330,39 @@ def test_final_analysis_excludes_incomplete_run_but_preserves_failure_state(
     assert excluded[0]["failures"] == []
     assert "missing_COMPLETED_json" in excluded[0]["reason"]
     assert "集計から除外した未完了 final run" in report.read_text()
+
+
+def test_final_analysis_rejects_a_tampered_completion_receipt(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path / "runs", test_queries=1)
+    outcome = run_benchmark(config, run_id="tampered-completion")
+    completion_path = outcome.run_dir / "COMPLETED.json"
+    completion = json.loads(completion_path.read_text())
+    completion["checkpoint_sha256"] = "0" * 64
+    atomic_write_json(completion_path, completion)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/analyze_results.py",
+            "--input",
+            str(tmp_path / "runs"),
+            "--output",
+            str(tmp_path / "analysis"),
+            "--report",
+            str(tmp_path / "report.md"),
+            "--figures",
+            str(tmp_path / "figures"),
+            "--evidence-role",
+            "final",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode != 0
+    assert "completion checkpoint hash mismatch" in completed.stderr
 
 
 def test_exact_truth_is_reused_across_identical_dataset_query_k_experiments(

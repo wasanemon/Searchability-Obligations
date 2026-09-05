@@ -1,6 +1,8 @@
 SHELL := /bin/bash
 PYTHON := .venv/bin/python
 PIP := .venv/bin/python -m pip
+REPORT_INPUT ?= results/runs
+REPORT_OUTPUT ?= $(REPORT_INPUT)/analysis
 
 export OMP_NUM_THREADS := 1
 export OPENBLAS_NUM_THREADS := 1
@@ -36,7 +38,10 @@ evaluate:
 	$(PYTHON) scripts/run_experiment.py --config configs/evaluate_delta100k.json --resume
 
 report:
-	$(PYTHON) scripts/analyze_results.py --input results/runs --evidence-role final
+	$(PYTHON) scripts/analyze_results.py --input "$(REPORT_INPUT)" \
+		--output "$(REPORT_OUTPUT)" --evidence-role final \
+		--immutable-evidence results/final_evidence/summary.json \
+		--evidence-manifest results/final_evidence/manifest.json
 
 clean-generated:
 	@echo "Generated runs are intentionally retained; remove an explicit run directory manually."
