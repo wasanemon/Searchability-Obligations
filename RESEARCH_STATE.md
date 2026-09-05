@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-06 05:14 (Asia/Tokyo)
+Last updated: 2026-09-06 07:08 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -1015,19 +1015,36 @@ recoverable. This state-only record was committed as `12c15a6`; final
 16.13s`, `git diff --check` passed, the tree was clean, and
 `codex/issue-1` was verified as an ancestor.
 
-The subsequent explicit SSH publication command was rejected by the execution
+The first explicit SSH publication command was rejected by the execution
 approval layer before process creation because pushing the repository to an
-external destination requires a separate explicit user confirmation. No remote
-branch or PR was created or changed, and the rejection is not labelled a
-successful publication. After confirmation, the exact next command is:
+external destination required separate explicit user confirmation. No remote
+mutation occurred in that failed attempt, and it is not labelled a successful
+publication. The user then explicitly approved the push and stacked PR. The
+same command succeeded:
 
 ```bash
 git push git@github.com:wasanemon/Searchability-Obligations.git \
   codex/issue-3-native:refs/heads/codex/issue-3-native
 ```
 
-Then open a non-draft stacked PR with base `codex/issue-1`, head
-`codex/issue-3-native`, wait for its CI, and do not merge it.
+Remote branch `codex/issue-3-native` was created at
+`f6b4146c39e5c317ebc6c0e3c3b5f958aba1356a`. A duplicate-PR search returned
+none; dependency PR #2 was rechecked as open, unmerged, and mergeable at head
+`2ddada6f162c4ac0759cc238b32483c37cd5358e`. The connected GitHub application
+then opened non-draft stacked PR #4, base `codex/issue-1`, head
+`codex/issue-3-native`:
+
+```text
+https://github.com/wasanemon/Searchability-Obligations/pull/4
+```
+
+PR #4 is open, unmerged, mergeable, has 13 commits / 54 changed files, and its
+body records the negative result, exact correctness/validation/clean-acceptance
+evidence, raw-data policy, limitations, dependency on PR #2, and no-auto-merge
+instruction. GitHub Actions `ci` run `33994980611` (run number 9) for commit
+`f6b4146` completed successfully. The PR was not merged. The next resumable
+action is to commit this publication-state update, push that state-only commit,
+wait for CI on the resulting final head, and leave the PR open.
 
 ## Scope and source status
 
