@@ -1,0 +1,1 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="0" skipped="0" tests="1" time="35.165" timestamp="2026-09-05T13:54:07.240407+09:00" hostname="aries"><testcase classname="tests.test_randomized" name="test_fixed_seed_ten_thousand_random_cases" time="35.049" /></testsuite></testsuites>

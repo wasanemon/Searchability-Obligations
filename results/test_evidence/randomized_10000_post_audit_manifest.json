@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "executed_at": "2026-09-05T15:03:50+09:00",
+  "command": "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 .venv/bin/python -m pytest tests/test_randomized.py::test_fixed_seed_ten_thousand_random_cases -q --junitxml=results/test_evidence/randomized_10000_post_audit.xml",
+  "fixed_seed": 6202052,
+  "case_count": 10000,
+  "outcome": "passed",
+  "tests": 1,
+  "failures": 0,
+  "errors": 0,
+  "pytest_reported_seconds": 46.76,
+  "junit_suite_seconds": 46.634,
+  "junit_sha256": "d417bd3faa174db506a5d46a84889961faa17b05e4513ad84c0b351d96f7728b",
+  "implementation_tree_sha256": "b764325a46d5e7a3e4767043c25f430da12b1c600cc7825120b9c49af13c66c7",
+  "git_head_before_final_source_commit": "1f0c74e7e5b06ee9148827ee7c45b4149088f671",
+  "git_worktree_dirty": true,
+  "evidence_note": "Executed after immutable-byte payload and strict-boundary audit fixes; benchmark hardening was still being finalized, so a final full-suite rerun is required after source freeze."
+}

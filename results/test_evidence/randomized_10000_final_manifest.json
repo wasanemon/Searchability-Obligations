@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "executed_at": "2026-09-05T21:16:34+09:00",
+  "command": "OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 .venv/bin/python -m pytest tests/test_randomized.py::test_fixed_seed_ten_thousand_random_cases -q --junitxml=results/test_evidence/randomized_10000_final.xml",
+  "preceding_full_suite_command": "make test-full",
+  "preceding_full_suite_outcome": "133 passed, 8 warnings in 54.54s",
+  "fixed_seed": 6202052,
+  "case_count": 10000,
+  "outcome": "passed",
+  "tests": 1,
+  "failures": 0,
+  "errors": 0,
+  "pytest_reported_seconds": 46.94,
+  "junit_suite_seconds": 46.815,
+  "junit_sha256": "4701592b238fc7dff6bd30ae568dee41049723efcecf2ee1f26c3674b9e9bbd9",
+  "implementation_tree_sha256": "8c4581cf733bf25b3e27c115be1dbdad1285564f03846c0d0e93b822c2c80f31",
+  "git_head": "5293311ba69b19115dbedd34c64974885b32c632",
+  "git_worktree_clean_before_test_artifact": false,
+  "evidence_note": "Hash-bound rerun after final analyzer integrity checks and their regression tests were added. The search kernel is unchanged from the completed final real-data runs; the full executable-tree bytes are identified above. A separate clean-environment verification is recorded in RESEARCH_STATE.md."
+}

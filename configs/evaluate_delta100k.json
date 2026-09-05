@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "run_name": "texmex-sift-delta100k-heavy-sweep",
+  "output_root": "results/runs",
+  "evidence_role": "final",
+  "threads": 1,
+  "warmup_queries": 10,
+  "repetitions": 1,
+  "query_block_size": 25,
+  "method_order_seed": 1161981756646125696,
+  "throughput_queries": 25,
+  "throughput_repetitions": 1,
+  "independent_oracle_queries": 1,
+  "independent_oracle_max_population": 120000,
+  "lb_audit_queries": 25,
+  "experiments": [
+    {
+      "id": "sift-delta-100000",
+      "axis": "delta_size",
+      "dataset": {
+        "type": "texmex",
+        "name": "sift",
+        "root": "data/raw",
+        "n_base": 100000,
+        "n_delta": 100000,
+        "n_validation": 200,
+        "n_test": 200
+      },
+      "k": 10,
+      "candidate_count": 64,
+      "n_groups": 128,
+      "raw_pending_count": 1000,
+      "center_training_size": 100000,
+      "group_seed": 0,
+      "kmeans_iterations": 20,
+      "positive_beta_factors": [0.05],
+      "positive_beta_min": 1e-12,
+      "base_hnsw_ef_search": 128,
+      "hnsw_m": 32,
+      "hnsw_ef_construction": 200,
+      "hnsw_ef_search": [128, 512]
+    }
+  ]
+}

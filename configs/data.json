@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "root": "data/raw",
+  "manifest_dir": "data/manifests",
+  "datasets": [
+    {
+      "name": "sift",
+      "url": "ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz",
+      "archive": "sift.tar.gz",
+      "sha256": "92f1270c5e3a0cb46b89983e72b0511e4df065c31a9fa0276d8c9b1fca5bc81a",
+      "sha256_source": "Pinned by this artifact after the first official-MD5-verified download on 2026-09-05; TEXMEX publishes MD5, not SHA-256.",
+      "md5": "b23d1b3b2ee8469d819b61ca900ef0ed",
+      "source_page": "http://corpus-texmex.irisa.fr/",
+      "terms_note": "The official source page marks the ANN datasets CC0 and publishes this archive's MD5. The archive is downloaded locally and is not committed."
+    },
+    {
+      "name": "gist",
+      "url": "ftp://ftp.irisa.fr/local/texmex/corpus/gist.tar.gz",
+      "archive": "gist.tar.gz",
+      "sha256": "01469a7f1c3768853525e543d537e2dfa1adece927616405e360952e3f67df73",
+      "sha256_source": "Pinned by this artifact after the first official-MD5-verified download on 2026-09-05; TEXMEX publishes MD5, not SHA-256.",
+      "md5": "31185e0f00854f74d27e8ad8d52628a9",
+      "source_page": "http://corpus-texmex.irisa.fr/",
+      "terms_note": "The official source page marks the ANN datasets CC0 and publishes this archive's MD5. The archive is downloaded locally and is not committed."
+    }
+  ]
+}
