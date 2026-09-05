@@ -62,6 +62,13 @@ class DatasetSplit:
             digest.update(name.encode("utf-8"))
             digest.update(str(contiguous.dtype).encode("ascii"))
             digest.update(np.asarray(contiguous.shape, dtype="<i8").tobytes())
+            # ``memoryview.cast`` rejects NumPy views with a zero-sized shape
+            # even though there are no payload bytes to hash.  The field name,
+            # dtype and complete shape above still bind an empty partition, so
+            # skip only its absent payload and retain chunked hashing for large
+            # non-empty arrays.
+            if contiguous.nbytes == 0:
+                continue
             view = memoryview(contiguous).cast("B")
             chunk_bytes = 8 * 1024 * 1024
             for offset in range(0, len(view), chunk_bytes):

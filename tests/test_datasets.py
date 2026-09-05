@@ -51,6 +51,27 @@ def test_dataset_hash_changes_with_seed_even_when_id_ranges_match() -> None:
     assert first.sha256() != second.sha256()
 
 
+def test_dataset_hash_accepts_zero_length_partitions() -> None:
+    split = synthetic_dataset(
+        kind="isotropic",
+        n_base=8,
+        n_delta=0,
+        n_validation=0,
+        n_test=0,
+        dimension=4,
+        seed=3,
+    )
+
+    observed = split.sha256()
+
+    assert observed == split.sha256()
+    assert len(observed) == 64
+    assert split.delta.shape == (0, 4)
+    assert split.validation_queries.shape == (0, 4)
+    assert split.test_queries.shape == (0, 4)
+    assert split.delta_ids.shape == (0,)
+
+
 def test_fvecs_reader_respects_row_offset_and_limit(tmp_path: Path) -> None:
     vectors = np.asarray(
         [[1.5, -2.0, 3.0], [4.0, 5.25, -6.0], [7.0, 8.0, 9.0]],

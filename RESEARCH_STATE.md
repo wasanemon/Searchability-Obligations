@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-05 15:30 (Asia/Tokyo)
+Last updated: 2026-09-05 17:50 (Asia/Tokyo)
 
 ## Scope and source status
 
@@ -307,6 +307,47 @@ make test
 - GIST can require several GiB and multiple indexes exceed naive in-memory
   estimates. Evaluation must stream/chunk exact work and build baselines
   sequentially. Any reduced sweep will be recorded as reduced, not complete.
+- The first source-frozen final real-data attempt was run with exactly
+  `make evaluate`. Run
+  `results/runs/texmex-main-and-lean-sweeps-20260905T062813.056342Z-98bb0214e0`
+  used config hash
+  `98bb0214e0869353364c1b5560616c9ccb065b5b1f0c65e7243ab9eace1a3909`
+  and implementation-tree hash
+  `d2e55be3b4f19ddff046d4cdedbfeafe07ad12ccdf5a9603726eab612a269095`.
+  It preserved 104/176 checksum-addressed raw blocks (SIFT/GIST main and all
+  seed conditions), approximately 460.6 MB of raw JSONL, zero recorded
+  benchmark failures through those blocks, and 6/6 independent Fraction-oracle
+  matches. At `2026-09-05T08:43:24.520290+00:00` it correctly ended as
+  `failed_incomplete`: the first `delta_count=0` sweep exposed
+  `TypeError: memoryview: cannot cast view with zeros in shape or strides` in
+  `DatasetSplit.sha256()`. This failure and its raw data remain in place and
+  must stay excluded from final aggregates. The cause is the zero-byte ndarray
+  hash path, not a measured search-contract violation.
+- Because fixing the empty-array hash changes the implementation-tree hash, the
+  104 completed blocks above will not be mixed with post-fix blocks. After a
+  regression test and full verification, `make evaluate` must start a new final
+  run; the failed run remains immutable audit evidence.
+- The zero-byte hash fix now skips only the absent ndarray payload after already
+  hashing the field name, dtype, and full shape; non-empty arrays retain the
+  original 8 MiB chunked hashing path. The new regression covers empty Delta,
+  validation/test queries, and ID arrays. The exact one-thread targeted command
+  reported `8 passed in 0.36s`. A deliberately reduced end-to-end calibration
+  of the formerly failing `sift-delta-0` condition then completed 1/1 block with
+  no failures and 1/1 Fraction-oracle match as
+  `results/runs/texmex-main-and-lean-sweeps-20260905T084538.695374Z-4db427566a`.
+  Its config hash is
+  `4db427566abbb96e00022968cc162e31ac60810462284fa5fa7b753582ba0a59`;
+  it is calibration evidence only and will not enter final aggregates.
+- Post-fix `make test-full` collected 130 tests and completed with
+  `130 passed, 7 warnings in 53.50s`. The dedicated fixed-seed 10,000-case
+  command then completed with `1 passed in 47.46s`; updated JUnit
+  `results/test_evidence/randomized_10000_final.xml` has SHA-256
+  `f441aa7324ea66ab09e9d346aa9d71c00782c9d9f11ab27cd7f2054a7462fd67`.
+  The executable implementation-tree hash for both is
+  `d56668c2585afac1cbc15e99720d41bedb5967ead6ff25288321ee7c26aa1c76`.
+  This run was hash-bound but performed before committing the fix, so its
+  manifest truthfully records a dirty worktree; the required clean-environment
+  verification remains a later phase.
 
 ## Phase checklist
 
@@ -327,15 +368,20 @@ make test
 
 ## Current resume point
 
-Dataset acquisition, lifecycle hardening, benchmark hardening, and the
-immutable-payload correctness fix are implemented and source-frozen. The final
-full suite, 10,000-case evidence, and post-audit smoke passed as recorded above.
-Commit the smoke evidence, then resume with:
+Dataset acquisition, lifecycle hardening, benchmark hardening, the
+immutable-payload correctness fix, and the empty-partition hash fix are
+implemented. The first final real-data attempt and the successful targeted
+regression are preserved above. The exact next resumable work is:
 
 ```bash
+make test-full
 make evaluate
 make report
 ```
+
+Do not resume the old failed final run across the source-hash change. The
+runner's identity check enforces this and the new `make evaluate` must create a
+fresh final run.
 
 Both dataset manifests report no acquisition failures. To re-verify or resume a
 future partial GIST acquisition, run:
