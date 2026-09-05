@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-06 05:10 (Asia/Tokyo)
+Last updated: 2026-09-06 05:14 (Asia/Tokyo)
 
 ## Issue #3 native recheck start
 
@@ -1010,9 +1010,24 @@ git diff --exit-code -- reports/NATIVE_KERNEL_RECHECK_ja.md \
 
 Outcome: the clean/new-environment acceptance chain passed while keeping both
 the formal correctness/validation evidence and every earlier run separate and
-recoverable. The next resumable phase is to commit this state-only record,
-verify a clean branch, publish `codex/issue-3-native`, open the stacked PR onto
-`codex/issue-1`, and wait for CI without merging.
+recoverable. This state-only record was committed as `12c15a6`; final
+`make test` at that HEAD reported `254 passed, 2 deselected, 19 warnings in
+16.13s`, `git diff --check` passed, the tree was clean, and
+`codex/issue-1` was verified as an ancestor.
+
+The subsequent explicit SSH publication command was rejected by the execution
+approval layer before process creation because pushing the repository to an
+external destination requires a separate explicit user confirmation. No remote
+branch or PR was created or changed, and the rejection is not labelled a
+successful publication. After confirmation, the exact next command is:
+
+```bash
+git push git@github.com:wasanemon/Searchability-Obligations.git \
+  codex/issue-3-native:refs/heads/codex/issue-3-native
+```
+
+Then open a non-draft stacked PR with base `codex/issue-1`, head
+`codex/issue-3-native`, wait for its CI, and do not merge it.
 
 ## Scope and source status
 
