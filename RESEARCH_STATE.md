@@ -1,6 +1,6 @@
 # Research state
 
-Last updated: 2026-09-05 21:45 (Asia/Tokyo)
+Last updated: 2026-09-05 21:48 (Asia/Tokyo)
 
 ## Scope and source status
 
@@ -526,6 +526,12 @@ make test
   negative overall decision, hypothesis-specific decisions, main timings,
   contract scope, final and failed run identities, clean verification, raw-data
   policy, and limitations; it says explicitly that it will not be auto-merged.
+- GitHub Actions `ci` run `33966873199` (run number 5) for publication-state
+  HEAD `8f32181a36e61f85ea4bafe94030d1375d02c622` completed successfully. The
+  workflow installs the pinned dependencies on Ubuntu 22.04 / Python 3.10 with
+  one-thread environment variables and executes the non-evaluation pytest
+  suite. The connected application then reported PR #2 as open, mergeable, and
+  unmerged.
 - The detached temporary worktree `/tmp/searchability-clean-n1Ehz2` and its
   dedicated `.venv` were removed with `git worktree remove --force` only after
   its completed smoke raw directory had been copied and committed. The final
@@ -554,8 +560,9 @@ Dataset acquisition, implementation, tests, final real-data runs,
 checksum-verifying analysis, tracked evidence export, Japanese decision,
 detached clean-environment acceptance, phase commits, branch publication, and
 PR creation are complete. The preserved failed attempt remains excluded and PR
-#2 remains intentionally unmerged. After this publication-state commit is
-pushed, the exact next resumable checks are:
+#2 remains intentionally unmerged. CI run 33966873199 passed on the complete
+source and evidence state; this final state-only note does not alter executable
+code or experimental evidence. The exact future resume checks are:
 
 ```bash
 git status --short --branch
@@ -563,10 +570,10 @@ git diff --check
 git rev-parse HEAD
 ```
 
-Then inspect the GitHub Actions run associated with that HEAD on PR #2. If it is
-still queued or running, wait; if it fails, preserve the log before changing
-anything and rerun only the failing verification locally. Do not merge the PR,
-and do not rerun or modify either completed final real-data run merely to refresh
+Then inspect PR #2 for any new review or GitHub Actions result on the current
+HEAD. If a later check fails, preserve the log before changing anything and
+rerun only the failing verification locally. Do not merge the PR, and do not
+rerun or modify either completed final real-data run merely to refresh
 timestamps.
 
 Both dataset manifests report no acquisition failures. To re-verify or resume a
